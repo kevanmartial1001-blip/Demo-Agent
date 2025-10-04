@@ -1,0 +1,57 @@
+[
+  { "id":"get_inventory_v1", "intent":"get_inventory", "matchers":["inventory","stock","sku","warehouse"],
+    "answer_template":"Based on your {{kb.primary_region || 'main'}} operations, you have approximately {{randomInt(180,520)}} units of {{entities.product || 'the requested product'}} available across {{randomInt(2,4)}} locations.",
+    "workflow_trace":[
+      "Parsed your request and identified an Inventory Lookup intent.",
+      "Resolved the product using your catalog (name/SKU) from the company KB.",
+      "Queried the (simulated) Inventory Service across all active locations.",
+      "Validated totals against last week’s snapshot to catch anomalies.",
+      "Consolidated warehouse-level quantities and computed coverage days."
+    ],
+    "benefits":[
+      "Reduces manual stock checks by ~80–90%.",
+      "Prevents stockouts and overstock via automated low-stock alerts.",
+      "Frees Ops to focus on replenishment planning and priority SKUs."
+    ],
+    "presentation":{"columns":["Location","Quantity","Last Updated"],
+      "rows":[["WH-{{randomInt(1,3)}}","{{randomInt(60,220)}}","Today"],
+              ["WH-{{randomInt(4,6)}}","{{randomInt(40,180)}}","Today"],
+              ["Store-{{randomInt(1,2)}}","{{randomInt(20,120)}}","Today"]]}
+  },
+  { "id":"get_revenue_last_week_v1","intent":"get_revenue_last_week","matchers":["revenue","sales","turnover","gmv","last week"],
+    "answer_template":"From {{kb.primary_region || 'your main market'}}, estimated revenue for last week is €{{randomInt(50000,150000)}}. Top drivers: {{kb.example_top_product || 'your best-selling product'}}.",
+    "workflow_trace":[
+      "Detected a Revenue Reporting intent.",
+      "Aligned time window to last Monday→Sunday in the company timezone.",
+      "Pulled (simulated) transactions and grouped by product/region.",
+      "Computed totals, growth vs prior week, and standout segments.",
+      "Prepared a concise leadership summary."
+    ],
+    "benefits":[
+      "Delivers a weekly CFO-grade snapshot in seconds.",
+      "Highlights growth pockets and under-performance automatically.",
+      "Feeds a 1-click ‘Friday Brief’ that nudges owners to act."
+    ],
+    "presentation":{"columns":["Metric","Value"],
+      "rows":[["Total Revenue (LW)","€{{randomInt(50000,150000)}}"],["WoW Change","{{randomInt(-8,18)}}%"],["Top Product","{{kb.example_top_product || 'Flagship SKU'}}"]]}
+  },
+  { "id":"get_upcoming_vacations_v1","intent":"get_upcoming_vacations","matchers":["vacation","time off","ooo","pto","leave"],
+    "answer_template":"Upcoming time-off (simulated) for the {{entities.team || 'selected team'}}: {{randomInt(2,6)}} employees have PTO within the next 30 days.",
+    "workflow_trace":[
+      "Recognized a Time-Off Overview intent.",
+      "Scoped to the requested team/department from the KB.",
+      "Checked OOO entries and pending approvals (simulated HRIS).",
+      "Detected any coverage risk windows.",
+      "Compiled a 30-day forward calendar."
+    ],
+    "benefits":[
+      "Prevents coverage gaps by surfacing risk periods.",
+      "Saves managers hours per week consolidating calendars.",
+      "Feeds staffing and customer-promise decisions."
+    ],
+    "presentation":{"columns":["Employee","Dates","Reason"],
+      "rows":[["{{kb.example_employee_1 || 'A. Garcia'}}","Oct {{randomInt(6,10)}}–{{randomInt(11,15)}}","Vacation"],
+              ["{{kb.example_employee_2 || 'L. Rossi'}}","Oct {{randomInt(18,22)}}–{{randomInt(23,28)}}","Family"],
+              ["{{kb.example_employee_3 || 'N. Smith'}}","Oct {{randomInt(25,26)}}","Appointment"]]}
+  }
+]
