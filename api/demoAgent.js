@@ -1,14 +1,15 @@
 // /api/demoAgent.js
 // Universal Demo Agent — KB-personalized, connectorless simulation
-// Env: OPENAI_API_KEY (optional — regex fallback exists)
+// Works with or without OPENAI_API_KEY (LLM planner optional)
 
 module.exports.config = { runtime: 'nodejs18.x' };
 
-// ---- safe imports
 let OpenAI;
 try { OpenAI = require('openai'); } catch (_) {}
+const fs = require('fs');
+const path = require('path');
 
-// ---- simple seeded RNG (stable per session)
+// ---------- seedable RNG ----------
 function mulberry32(a) {
   return function() {
     let t = (a += 0x6D2B79F5);
@@ -18,18 +19,17 @@ function mulberry32(a) {
   };
 }
 
-// ---- tiny templater: {{var}} + helpers {{randomInt(a,b)}}
+// ---------- tiny templater ----------
 function renderTemplate(str, ctx, rng) {
   return String(str).replace(/\{\{\s*([^\}]+)\s*\}\}/g, (_, expr) => {
     expr = expr.trim();
     if (expr.startsWith('randomInt(')) {
       const m = expr.match(/randomInt\((\-?\d+)\s*,\s*(\-?\d+)\)/);
       if (!m) return '';
-      const [_, a, b] = m;
-      const lo = parseInt(a, 10), hi = parseInt(b, 10);
+      const lo = parseInt(m[1], 10), hi = parseInt(m[2], 10);
       return String(lo + Math.floor(rng() * (hi - lo + 1)));
     }
-    // nested prop support: a.b.c
+    // nested props a.b.c
     const parts = expr.split('.');
     let v = ctx;
     for (const p of parts) { if (v && p in v) v = v[p]; else { v = ''; break; } }
@@ -37,14 +37,14 @@ function renderTemplate(str, ctx, rng) {
   });
 }
 
-// ---- load templates (inline fallback)
+// ---------- default templates (fallback if file missing) ----------
 const DEFAULT_TEMPLATES = [
   {
     id: "get_inventory_v1",
     intent: "get_inventory",
-    matchers: ["inventory", "stock", "in stock", "units", "warehouse", "SKU"],
+    matchers: ["inventory", "stock", "in stock", "units", "warehouse", "sku"],
     answer_template:
-      "Based on your {{kb.primary_region || 'main'}} operations, you have approximately {{randomInt(180,520)}} units of {{entities.product || 'the requested product'}} available across {{randomInt(2,4)}} locations. A typical weekly sell-through for {{entities.product || 'this item'}} at {{kb.company_name}} is ~{{randomInt(60,140)}} units.",
+      "Based on your {{kb.primary_region || 'main'}} operations, you have approximately {{randomInt(180,520)}} units of {{entities.product || 'the requested product'}} available across {{randomInt(2,4)}} locations. Typical weekly sell-through for {{entities.product || 'this item'}} at {{kb.company_name}} is ~{{randomInt(60,140)}} units.",
     workflow_trace: [
       "Parsed your request and identified an Inventory Lookup intent.",
       "Resolved the product using your catalog (name/SKU) from the company KB.",
@@ -69,9 +69,9 @@ const DEFAULT_TEMPLATES = [
   {
     id: "get_revenue_last_week_v1",
     intent: "get_revenue_last_week",
-    matchers: ["revenue", "sales", "turnover", "last week", "GMV", "income"],
+    matchers: ["revenue", "sales", "turnover", "gmv", "last week"],
     answer_template:
-      "From {{kb.primary_region || 'your main market'}}, estimated revenue for last week is €{{randomInt(50000,150000)}}. Top drivers: {{kb.example_top_product || 'your best-selling product'}}, and {{kb.example_top_region || 'primary region'}}.",
+      "From {{kb.primary_region || 'your main market'}}, estimated revenue for last week is €{{randomInt(50000,150000)}}. Top driver: {{kb.example_top_product || 'your best-selling product'}} in {{kb.example_top_region || 'your primary region'}}.",
     workflow_trace: [
       "Detected a Revenue Reporting intent.",
       "Aligned time window to last Monday→Sunday in the company timezone.",
@@ -96,7 +96,7 @@ const DEFAULT_TEMPLATES = [
   {
     id: "get_upcoming_vacations_v1",
     intent: "get_upcoming_vacations",
-    matchers: ["vacation", "time off", "OOO", "PTO", "leave"],
+    matchers: ["vacation", "time off", "ooo", "pto", "leave"],
     answer_template:
       "Upcoming time-off (simulated) for the {{entities.team || 'selected team'}}: {{randomInt(2,6)}} employees have PTO within the next 30 days.",
     workflow_trace: [
@@ -122,27 +122,38 @@ const DEFAULT_TEMPLATES = [
   }
 ];
 
-// ---- naive intent detection (regex) if no LLM
+// ---------- load templates from /templates if present ----------
+function readJsonTemplates() {
+  try {
+    const p = path.join(process.cwd(), 'templates', 'intents.demo.json');
+    if (fs.existsSync(p)) {
+      const txt = fs.readFileSync(p, 'utf8');
+      const obj = JSON.parse(txt);
+      if (Array.isArray(obj) && obj.length) return obj;
+    }
+  } catch (_) {}
+  return DEFAULT_TEMPLATES;
+}
+
+// ---------- heuristics planner ----------
 function detectIntentHeuristic(text, templates) {
   const t = text.toLowerCase();
   for (const tpl of templates) {
     if ((tpl.matchers || []).some(m => t.includes(m.toLowerCase()))) return tpl.intent;
   }
-  // fallbacks
   if (/inventory|stock|sku|warehouse/i.test(text)) return "get_inventory";
   if (/revenue|sales|turnover|gmv|last week/i.test(text)) return "get_revenue_last_week";
   if (/vacation|pto|leave|ooo|time off/i.test(text)) return "get_upcoming_vacations";
   return "generic_question";
 }
 
-// ---- LLM planner (optional)
+// ---------- optional LLM planner ----------
 async function planWithLLM(utterance, kb) {
   if (!OpenAI || !process.env.OPENAI_API_KEY) return null;
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const sys = [
-    "You classify the user's request for a demo agent.",
-    "Return strict JSON with fields: intent, entities (object), confidence (0..1).",
-    "Intents: get_inventory, get_revenue_last_week, get_upcoming_vacations, simulate_inbound_call, generic_question."
+    "Classify the user's demo request. Return strict JSON: {intent, entities, confidence}.",
+    "Allowed intents: get_inventory, get_revenue_last_week, get_upcoming_vacations, simulate_inbound_call, generic_question."
   ].join(' ');
   const user = JSON.stringify({ utterance, kb_preview: { company_name: kb?.company_name, sector: kb?.sector } });
   const res = await client.chat.completions.create({
@@ -159,7 +170,6 @@ function chooseTemplate(intent, templates) {
 }
 
 function buildContext(kb = {}, entities = {}) {
-  // Normalize a minimal KB shape
   return {
     kb: {
       company_name: kb.company_name || kb.name || "Your Company",
@@ -182,16 +192,11 @@ function tableFromTemplate(pres, ctx, rng) {
   return { columns, rows };
 }
 
-async function readJsonTemplates() {
-  // If you move templates to /templates/intents.demo.json you can load here with fs.
-  // In serverless environments without fs, rely on DEFAULT_TEMPLATES.
-  return DEFAULT_TEMPLATES;
-}
-
 function mkTraceId() {
   return 'demo_' + Math.random().toString(36).slice(2, 10);
 }
 
+// ---------- handler ----------
 module.exports = async (req, res) => {
   if (req.method === 'OPTIONS') {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -210,43 +215,37 @@ module.exports = async (req, res) => {
       return res.status(400).json({ ok: false, error: 'Missing "utterance" (string).' });
     }
 
-    // seed → consistent randomness per session/company
     const seedBase = seed ?? (kb.company_id?.length ? kb.company_id.split('').reduce((a,c)=>a+c.charCodeAt(0),0) : 12345);
     const rng = mulberry32(seedBase);
 
-    const templates = await readJsonTemplates();
+    const templates = readJsonTemplates();
 
-    // Try LLM planner, fallback to heuristic
     let plan = await planWithLLM(utterance, kb);
-    if (!plan) {
-      plan = { intent: detectIntentHeuristic(utterance, templates), entities: {}, confidence: 0.51 };
-    }
+    if (!plan) plan = { intent: detectIntentHeuristic(utterance, templates), entities: {}, confidence: 0.51 };
 
-    // Simple entity sniffers (if LLM didn't fill)
+    // Simple entity guesses
     if (!plan.entities) plan.entities = {};
     if (!plan.entities.product) {
       const m = utterance.match(/(?:for|of)\s+([A-Za-z0-9\-\s]{2,40})$/i);
       if (m) plan.entities.product = m[1].trim();
     }
-    if (!plan.entities.team && /(team|sales|support|ops|hr)/i.test(utterance)) {
+    if (!plan.entities.team && /(sales|support|ops|operations|hr|marketing|engineering)/i.test(utterance)) {
       const m = utterance.match(/(sales|support|ops|operations|hr|marketing|engineering)/i);
       if (m) plan.entities.team = m[1].toLowerCase();
     }
 
-    const tpl = chooseTemplate(plan.intent, templates) || chooseTemplate('generic_question', templates);
+    const tpl = chooseTemplate(plan.intent, templates);
     if (!tpl) {
       return res.status(200).json({
         ok: true,
         answer: { title: "Demo Answer", format: "text", value: "Here’s how this would work once connected to your systems." },
-        explain: { steps: ["Planner identified your intent.", "Would route to the right workflow.", "Would call the necessary systems.", "Would validate and summarize results."] },
-        impact: { bullets: ["Time saved", "Reduced errors", "Faster decisions"] },
+        explain: { steps: ["Planner identified your intent.","Would route to the right workflow.","Would call the necessary systems.","Would validate and summarize results."] },
+        impact: { bullets: ["Time saved","Reduced errors","Faster decisions"] },
         meta: { intent: plan.intent, trace_id: mkTraceId(), demo }
       });
     }
 
     const ctx = buildContext(kb, plan.entities);
-
-    // Compose Answer
     const answerText = renderTemplate(tpl.answer_template, ctx, rng);
     const table = tableFromTemplate(tpl.presentation, ctx, rng);
 
@@ -254,15 +253,14 @@ module.exports = async (req, res) => {
       ? { title: "Answer", format: "table", value: table, summary: answerText }
       : { title: "Answer", format: "text", value: answerText };
 
-    // Explain (workflow trace)
     const explain = { steps: (tpl.workflow_trace || []).map(s => renderTemplate(s, ctx, rng)) };
-
-    // Impact (benefits)
     const impact = { bullets: (tpl.benefits || []).map(b => renderTemplate(b, ctx, rng)),
       ctas: [{ label: "Connect to my real systems", action: "request_integration", requires_confirm: false }]
     };
 
-    const resp = {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    return res.status(200).json({
       ok: true,
       answer,
       explain,
@@ -275,11 +273,7 @@ module.exports = async (req, res) => {
         trace_id: mkTraceId(),
         data_sources: ["Company KB (simulated)"]
       }
-    };
-
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    return res.status(200).json(resp);
+    });
   } catch (err) {
     console.error('demoAgent error', err);
     return res.status(500).json({ ok: false, error: String(err?.message || err) });
