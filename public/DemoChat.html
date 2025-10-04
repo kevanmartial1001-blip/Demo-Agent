@@ -14,6 +14,7 @@
   .grow{flex:1}
   table{width:100%;border-collapse:collapse;margin-top:8px}
   th,td{border:1px solid #232735;padding:8px;text-align:left}
+  h1{margin:0 0 6px 0}
 </style>
 </head>
 <body>
@@ -56,11 +57,16 @@ async function ask() {
   if (!utterance) return;
 
   btn.disabled = true; btn.textContent = 'Thinking…';
-  const res = await fetch('/api/demoAgent', {
-    method: 'POST',
-    headers: { 'Content-Type':'application/json' },
-    body: JSON.stringify({ utterance, kb, demo: true })
-  }).catch(e => ({ ok:false, error:String(e) }));
+  let res;
+  try {
+    res = await fetch('/api/demoAgent', {
+      method: 'POST',
+      headers: { 'Content-Type':'application/json' },
+      body: JSON.stringify({ utterance, kb, demo: true })
+    });
+  } catch (e) {
+    res = null;
+  }
 
   const out = document.getElementById('out');
   const wrap = document.createElement('div');
@@ -79,9 +85,7 @@ async function ask() {
     let h = '<table><thead><tr>';
     for (const c of t.columns) h += `<th>${c}</th>`;
     h += '</tr></thead><tbody>';
-    for (const r of t.rows) {
-      h += '<tr>' + r.map(v => `<td>${v}</td>`).join('') + '</tr>';
-    }
+    for (const r of t.rows) h += '<tr>' + r.map(v => `<td>${v}</td>`).join('') + '</tr>';
     h += '</tbody></table>';
     return h;
   }
