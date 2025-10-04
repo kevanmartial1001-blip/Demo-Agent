@@ -1,7 +1,8 @@
 // /api/demoAgent.js
-// Universal Demo Agent — "ChatGPT for your business" (demo/simulated)
-// Produces: natural-language reply + 3 cards (Answer / How / Why)
-// Works without OPENAI_API_KEY (heuristics), but shines with it.
+// Universal Demo Agent — with chat memory + optional external logging.
+// Env (optional):
+//   OPENAI_API_KEY               -> LLM planner + synthesizer
+//   SHEETS_WEBHOOK_URL           -> POST every interaction to this webhook (e.g., Google Apps Script)
 
 module.exports.config = { runtime: 'nodejs18.x' };
 
@@ -9,6 +10,7 @@ let OpenAI;
 try { OpenAI = require('openai'); } catch (_) {}
 const fs = require('fs');
 const path = require('path');
+const fetch = global.fetch || require('node-fetch');
 
 // =============== Utilities ===============
 function mulberry32(a){return function(){let t=(a+=0x6D2B79F5);t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return((t^(t>>>14))>>>0)/4294967296;};}
@@ -44,7 +46,7 @@ function normalizeKB(kb={}){
   };
 }
 
-// =============== Template Library (fallback) ===============
+// =============== Templates (fallback) ===============
 const DEFAULT_TEMPLATES = [
   {
     id:"get_inventory_v1", intent:"get_inventory",
@@ -53,7 +55,7 @@ const DEFAULT_TEMPLATES = [
     workflow_trace:[
       "Parsed your request and identified Inventory Lookup.",
       "Resolved product name/SKU from your KB.",
-      "Queried the simulated Inventory Service across locations.",
+      "Queried the (simulated) Inventory Service across locations.",
       "Validated totals vs last week snapshot.",
       "Summarized per-location and overall coverage."
     ],
@@ -156,7 +158,6 @@ const DEFAULT_TEMPLATES = [
   }
 ];
 
-// load optional /templates/intents.demo.json
 function loadTemplates(){
   try {
     const p = path.join(process.cwd(),'templates','intents.demo.json');
@@ -168,20 +169,18 @@ function loadTemplates(){
   return DEFAULT_TEMPLATES;
 }
 
-// =============== Intent Detection ===============
+// =============== Intent & Entities ===============
 function detectIntentHeuristic(utterance, templates){
   const t=utterance.toLowerCase();
   for(const tpl of templates){
     if((tpl.matchers||[]).some(m=>t.includes(String(m).toLowerCase()))) return tpl.intent;
   }
-  // domain hints:
   if(/inventory|stock|sku|warehouse/.test(t)) return 'get_inventory';
   if(/revenue|sales|turnover|gmv|last week|past week/.test(t)) return 'get_revenue_last_week';
   if(/vacation|pto|leave|ooo|time off/.test(t)) return 'get_upcoming_vacations';
   if(/call|role ?play|phone script/.test(t)) return 'simulate_inbound_call';
   return 'generic_question';
 }
-
 function guessEntities(utterance, plan){
   if(!plan.entities) plan.entities={};
   if(!plan.entities.product){
@@ -203,45 +202,34 @@ function guessEntities(utterance, plan){
 async function planWithLLM(utterance, kb){
   if(!OpenAI || !process.env.OPENAI_API_KEY) return null;
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  const sys = [
-    "You classify a user's business request for a DEMO agent (no real connectors).",
-    "Return strict JSON: { intent, entities, confidence }",
-    "Intents: get_inventory, get_revenue_last_week, get_upcoming_vacations, simulate_inbound_call, generic_question."
-  ].join(' ');
+  const sys = "Classify a DEMO request. Return JSON { intent, entities, confidence }. Intents: get_inventory, get_revenue_last_week, get_upcoming_vacations, simulate_inbound_call, generic_question.";
   const user = JSON.stringify({ utterance, kb_preview: { company_name: kb.company_name, sector: kb.sector } });
   const r = await client.chat.completions.create({
     model:"gpt-4o-mini",
     messages:[{role:"system",content:sys},{role:"user",content:user}],
-    response_format:{type:"json_object"},
-    temperature:0.1
+    response_format:{type:"json_object"}, temperature:0.1
   });
   try { return JSON.parse(r.choices[0].message.content); } catch { return null; }
 }
 
-// **NEW**: LLM Synthesizer — crafts rich NL answer + cards for ANY request
-async function synthesizeWithLLM(utterance, kbNorm, plan){
+async function synthesizeWithLLM(utterance, kbNorm, plan, history){
   if(!OpenAI || !process.env.OPENAI_API_KEY) return null;
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const sys = `
 You are a universal business assistant in DEMO mode.
-- Speak as a helpful, senior operator for ${kbNorm.company_name} (${kbNorm.sector}) in ${kbNorm.primary_region}.
-- No real system access. Produce PLAUSIBLE values and clearly mark them as simulated.
-- Output strict JSON:
+- Speak as a senior operator for ${kbNorm.company_name} (${kbNorm.sector}) in ${kbNorm.primary_region}.
+- No real system access. Use PLAUSIBLE values and mark as simulated.
+- Consider prior turns to resolve pronouns/time windows.
+Return strict JSON:
 {
-  "nl": "natural language reply (2-5 short paragraphs)",
-  "answer": { "title": "string", "format": "text|table|json", "value": any, "summary": "optional string" },
-  "explain": { "steps": ["5-7 short steps of how it would work with real systems"] },
-  "impact": { "bullets": ["2-4 benefits"], "ctas": [{"label":"string","action":"string","requires_confirm":false}] }
+  "nl": "2-5 short paragraphs of natural language",
+  "answer": { "title":"string","format":"text|table|json","value":any,"summary":"optional string" },
+  "explain": { "steps":["5-7 steps of how it would work with real systems"] },
+  "impact": { "bullets":["2-4 benefits"], "ctas":[{"label":"Connect to my real systems","action":"request_integration","requires_confirm":false}] }
 }
-Keep it professional, concise, and tailored to the KB. If tables help, use them.
 `.trim();
 
-  const user = JSON.stringify({
-    utterance,
-    intent: plan.intent,
-    entities: plan.entities,
-    kb: kbNorm
-  });
+  const user = JSON.stringify({ utterance, intent: plan.intent, entities: plan.entities, kb: kbNorm, history: history||[] });
 
   const r = await client.chat.completions.create({
     model: "gpt-4o",
@@ -254,28 +242,17 @@ Keep it professional, concise, and tailored to the KB. If tables help, use them.
   catch { return null; }
 }
 
-// =============== Heuristic Synthesizer (no LLM) ===============
+// no-LLM synth
 function synthesizeHeuristic(utterance, kbNorm, plan, tpl, rng){
-  // NL summary tailored per intent
   let nl;
   switch(plan.intent){
-    case 'get_inventory':
-      nl = `Here’s a simulated view of stock for ${plan.entities.product||'the item'} across ${kbNorm.primary_region}. These numbers are illustrative for the demo; when connected to your ERP, the results will be live and exact.`;
-      break;
-    case 'get_revenue_last_week':
-      nl = `Below is a demo weekly revenue snapshot for ${kbNorm.company_name}. Once connected to Stripe/Shop/ERP, we’ll produce this automatically every week, with drill-downs by product and region.`;
-      break;
-    case 'get_upcoming_vacations':
-      nl = `Here’s a simulated view of upcoming PTO for ${plan.entities.team||'the team'}. In production we’ll pull this from your HRIS and flag coverage risks in real time.`;
-      break;
-    case 'simulate_inbound_call':
-      nl = `Here’s a realistic call script in your brand voice. In production we can route calls, transcribe, and push outcomes to CRM automatically.`;
-      break;
-    default:
-      nl = `I drafted a practical approach tailored to ${kbNorm.company_name}. This is a demo with plausible values; the live version uses your connected systems.`;
+    case 'get_inventory': nl = `Simulated snapshot for ${plan.entities.product||'the item'} across ${kbNorm.primary_region}. Live numbers will come from your ERP once connected.`; break;
+    case 'get_revenue_last_week': nl = `Demo weekly revenue for ${kbNorm.company_name}. Live mode uses Stripe/Shop/ERP and adds drill-downs by product/region.`; break;
+    case 'get_upcoming_vacations': nl = `Simulated PTO for ${plan.entities.team||'the team'}. Live mode pulls from HRIS and flags coverage risks.`; break;
+    case 'simulate_inbound_call': nl = `Brand-voice call script. Live mode can route calls, transcribe, and push outcomes to CRM.`; break;
+    default: nl = `Demo plan tailored to ${kbNorm.company_name}. Live mode automates it end-to-end.`;
   }
 
-  // Build cards from template
   const ctx = { kb: kbNorm, entities: plan.entities };
   const table = tpl.presentation ? {
     columns: tpl.presentation.columns.map(c=>renderTemplate(c, ctx, rng)),
@@ -294,6 +271,19 @@ function synthesizeHeuristic(utterance, kbNorm, plan, tpl, rng){
   return { nl, answer, explain, impact };
 }
 
+// optional external logging
+async function logOut(payload){
+  try {
+    console.log('DEMO_LOG', payload);
+    if (process.env.SHEETS_WEBHOOK_URL){
+      await fetch(process.env.SHEETS_WEBHOOK_URL, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(payload)
+      }).catch(()=>{});
+    }
+  } catch {}
+}
+
 // =============== Handler ===============
 module.exports = async (req, res) => {
   if (req.method === 'OPTIONS'){
@@ -308,7 +298,7 @@ module.exports = async (req, res) => {
 
   try{
     const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
-    const { utterance, kb={}, seed, demo=true } = body;
+    const { utterance, kb={}, seed, demo=true, history=[] } = body;
     if (!utterance || typeof utterance !== 'string'){
       return res.status(400).json({ ok:false, error:'Missing "utterance" (string).' });
     }
@@ -322,6 +312,12 @@ module.exports = async (req, res) => {
     if(!plan){
       plan = { intent: detectIntentHeuristic(utterance, templates), entities: {}, confidence: 0.51 };
     }
+    // simple coref: if pronouns/time words and last turn exists, inherit last entities/intent when sensible
+    const last = Array.isArray(history) && history.length ? history[history.length-1] : null;
+    if (last && /this|that|those|it|them|same|again|last week|this week/i.test(utterance)) {
+      plan.entities = { ...(last.entities||{}), ...(plan.entities||{}) };
+      if (plan.intent === 'generic_question' && last.intent) plan.intent = last.intent;
+    }
     plan = guessEntities(utterance, plan);
 
     // TEMPLATE
@@ -329,14 +325,14 @@ module.exports = async (req, res) => {
     if(!tpl){ tpl = templates.find(t=>t.intent==='generic_question') || DEFAULT_TEMPLATES[DEFAULT_TEMPLATES.length-1]; }
 
     // SYNTHESIZE
-    let synth = await synthesizeWithLLM(utterance, kbNorm, plan).catch(()=>null);
+    let synth = await synthesizeWithLLM(utterance, kbNorm, plan, history).catch(()=>null);
     if(!synth){
       synth = synthesizeHeuristic(utterance, kbNorm, plan, tpl, rng);
     }
 
     const response = {
       ok:true,
-      nl: synth.nl, // natural-language top reply
+      nl: synth.nl,
       answer: synth.answer,
       explain: synth.explain,
       impact: synth.impact,
@@ -349,6 +345,14 @@ module.exports = async (req, res) => {
         data_sources:["Company KB (simulated)"]
       }
     };
+
+    // log interaction
+    logOut({
+      when: new Date().toISOString(),
+      utterance, intent: response.meta.intent, entities: plan.entities,
+      kb: { company_id: kb.company_id || '', company_name: kbNorm.company_name, sector: kbNorm.sector },
+      trace_id: response.meta.trace_id
+    });
 
     res.setHeader('Access-Control-Allow-Origin','*');
     res.setHeader('Content-Type','application/json; charset=utf-8');
