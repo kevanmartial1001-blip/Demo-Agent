@@ -3,77 +3,88 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Universal Demo Agent — Chat</title>
+<title>Universal Demo Agent</title>
 <style>
-  :root{--bg:#0b0c10;--panel:#0f121a;--card:#141824;--ink:#e9edf1;--muted:#9aa6b2;--line:#232735;--accent:#5eead4}
-  *{box-sizing:border-box} html,body{height:100%}
-  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,Segoe UI,Inter,Arial}
-  .app{display:grid;grid-template-columns:1fr 340px;height:100%}
-  .chat{display:flex;flex-direction:column;height:100%}
-  header{padding:14px 18px;border-bottom:1px solid var(--line);background:var(--panel);display:flex;align-items:center;gap:10px}
-  header h1{font-size:16px;margin:0} .pill{border:1px solid var(--line);padding:4px 8px;border-radius:999px;color:var(--muted)}
-  .stream{flex:1;overflow:auto;padding:18px 18px 8px}
-  .msg{display:flex;margin:12px 0;gap:10px} .msg.user{justify-content:flex-end}
-  .bubble{max-width:780px;padding:12px 14px;border-radius:14px;border:1px solid var(--line);background:var(--card)}
-  .msg.user .bubble{background:#1b2334}
+  :root{
+    --bg:#f6f7fb; --panel:#ffffff; --ink:#0b0c10; --muted:#647085; --line:#e6e8f0; --accent:#0ea5e9;
+    --bubble-user:#e8f3ff; --bubble-ai:#ffffff;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 ui-sans-serif,system-ui,Segoe UI,Inter,Arial}
+  .app{display:flex;flex-direction:column;height:100%}
+  header{position:sticky;top:0;background:var(--panel);border-bottom:1px solid var(--line);padding:12px 16px;display:flex;align-items:center;gap:10px;z-index:10}
+  header h1{font-size:15px;font-weight:600;margin:0}
+  main{flex:1;overflow:auto}
+  .stream{max-width:820px;margin:0 auto;padding:16px}
+  .msg{display:flex;margin:14px 0}
+  .msg.user{justify-content:flex-end}
+  .bubble{max-width:720px;border:1px solid var(--line);background:var(--bubble-ai);padding:12px 14px;border-radius:18px;box-shadow:0 1px 0 rgba(0,0,0,.03)}
+  .msg.user .bubble{background:var(--bubble-user)}
   .role{font-size:12px;color:var(--muted);margin-bottom:6px}
-  .cards{display:grid;gap:10px} .card{background:#151a26;border:1px solid var(--line);border-radius:12px;padding:12px}
+  .cards{display:grid;gap:10px;margin-top:6px}
+  .card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px}
   .card h3{margin:0 0 6px 0;font-size:14px}
-  .muted{color:var(--muted)} table{width:100%;border-collapse:collapse;margin-top:6px}
-  th,td{border:1px solid var(--line);padding:7px;text-align:left;font-size:14px}
-  .meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
-  .chip{font-size:12px;border:1px solid var(--line);padding:3px 8px;border-radius:999px;color:var(--muted)}
-  .composer{padding:12px;border-top:1px solid var(--line);background:var(--panel)}
-  .row{display:flex;gap:10px} .grow{flex:1}
+  table{width:100%;border-collapse:collapse;margin-top:6px}
+  th,td{border:1px solid var(--line);padding:8px;text-align:left}
+  .meta{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+  .chip{font-size:12px;border:1px solid var(--line);padding:3px 8px;border-radius:999px;color:var(--muted);background:#fff}
+  footer{position:sticky;bottom:0;background:var(--panel);border-top:1px solid var(--line);padding:12px 16px}
+  .composer{max-width:820px;margin:0 auto}
+  .row{display:flex;gap:10px;align-items:center}
+  .grow{flex:1}
   input,button,textarea{font:inherit}
-  input[type="text"]{background:#111520;border:1px solid var(--line);color:var(--ink);border-radius:12px;padding:12px 14px}
-  button{background:var(--accent);color:#061015;border:none;border-radius:12px;padding:12px 16px;font-weight:600;cursor:pointer}
-  button.ghost{background:#1f2937;color:#e9edf1;border:1px solid var(--line)}
+  .box{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:8px 10px}
+  input[type="text"]{flex:1;border:none;outline:none;background:transparent;padding:8px 6px}
+  button{border:none;background:var(--accent);color:#fff;padding:10px 14px;border-radius:12px;font-weight:600;cursor:pointer}
+  button.ghost{background:#eef2f7;color:#0b0c10}
   button:disabled{opacity:.6;cursor:not-allowed}
-  aside{border-left:1px solid var(--line);background:#0e1320;height:100%;display:flex;flex-direction:column}
-  .asideHead{padding:14px 16px;border-bottom:1px solid var(--line)} .asideHead h2{margin:0;font-size:14px}
-  .asideBody{padding:12px;overflow:auto}
-  textarea.kb{width:100%;height:220px;background:#0b0f1a;border:1px solid var(--line);color:#e9edf1;border-radius:10px;padding:10px;font-family:ui-monospace,Menlo,monospace;font-size:13px}
-  .save{margin-top:8px;width:100%} .lead{margin-top:14px;padding:10px;border:1px dashed var(--line);border-radius:10px}
-  .dots{display:inline-block;min-width:24px}.dots:after{content:"";display:inline-block;width:4px;height:4px;border-radius:50%;background:var(--ink);box-shadow:8px 0 0 var(--ink),16px 0 0 var(--ink);animation:pulse 1s infinite steps(1)}
+  .dots{display:inline-block;min-width:28px}
+  .dots:after{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:#111;box-shadow:8px 0 0 #111,16px 0 0 #111;animation:pulse 1s infinite steps(1)}
   @keyframes pulse{0%{opacity:.2}50%{opacity:1}100%{opacity:.2}}
-  .rowBtns{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
-  /* Modal */
-  .modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center}
-  .modal .sheet{background:#0f121a;border:1px solid #2a3244;border-radius:16px;max-width:460px;width:92%;padding:16px}
-  .field{display:flex;flex-direction:column;margin:8px 0} .field input,.field textarea{background:#0b0f1a;border:1px solid #2a3244;color:#e9edf1;border-radius:10px;padding:10px}
-  .field label{font-size:12px;color:#9aa6b2;margin-bottom:6px}
-  @media (max-width:980px){.app{grid-template-columns:1fr}}
+  /* KB modal (gear) */
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.35);display:none;align-items:center;justify-content:center;z-index:50}
+  .sheet{width:min(720px,92%);background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px}
+  .sheet h2{margin:0 0 8px 0;font-size:16px}
+  .field{display:flex;flex-direction:column;gap:6px;margin:8px 0}
+  .field textarea{width:100%;height:220px;border:1px solid var(--line);border-radius:10px;padding:10px;font-family:ui-monospace,Menlo,monospace}
+  .sheet .row{justify-content:flex-end}
+  /* small icons */
+  .icon-btn{width:40px;height:40px;border-radius:10px;border:1px solid var(--line);display:flex;align-items:center;justify-content:center;background:#fff;cursor:pointer}
 </style>
 </head>
 <body>
 <div class="app">
-  <!-- CHAT -->
-  <section class="chat">
-    <header>
-      <h1>Universal Demo Agent</h1>
-      <span class="pill">Demo • KB-personalized</span>
-      <span class="pill">No live connectors</span>
-    </header>
+  <header>
+    <h1>Universal Demo Agent</h1>
+    <div style="margin-left:auto;display:flex;gap:8px">
+      <button id="gear" class="icon-btn" title="Company KB">⚙️</button>
+    </div>
+  </header>
 
+  <main>
     <div id="stream" class="stream"></div>
+  </main>
 
+  <footer>
     <div class="composer">
-      <div class="row">
-        <input id="prompt" class="grow" type="text" placeholder="Ask anything for your business…" />
-        <button id="mic" class="ghost" title="Hold to speak">🎤</button>
-        <button id="tts" class="ghost" title="Read last reply">🔊</button>
+      <div class="row box">
+        <button id="mic" class="icon-btn" title="Hold to speak">🎤</button>
+        <input id="prompt" type="text" placeholder="Ask anything for your business…" />
         <button id="send">Send</button>
       </div>
-      <div class="muted" style="margin-top:6px;font-size:12px">Try: “How much inventory for Ultra Hoodie?”, “What was our revenue last week?”, “Simulate a customer call about pricing.”</div>
+      <div style="font-size:12px;color:#6b7280;margin-top:6px">Tip: “How much inventory for Ultra Hoodie?”, “What was our revenue last week?”, “Simulate a customer call about pricing.”</div>
     </div>
-  </section>
+  </footer>
+</div>
 
-  <!-- SIDEBAR -->
-  <aside>
-    <div class="asideHead"><h2>Company KB</h2></div>
-    <div class="asideBody">
-      <textarea id="kb" class="kb">{
+<!-- KB Modal -->
+<div id="kbModal" class="modal">
+  <div class="sheet">
+    <h2>Company KB</h2>
+    <div class="field">
+      <label style="font-size:13px;color:#647085">JSON</label>
+      <textarea id="kbText">{
   "company_id": "acme-123",
   "company_name": "ACME Retail Group",
   "sector": "Retail",
@@ -84,98 +95,69 @@
   "example_employee_2": "M. Duarte",
   "example_employee_3": "S. Ruiz"
 }</textarea>
-      <button class="save" id="saveKb">Save KB</button>
-
-      <div style="margin-top:14px">
-        <div class="muted" style="font-size:13px;margin-bottom:6px">Industry Packs</div>
-        <div class="rowBtns">
-          <button class="ghost" onclick="loadPack('retail')">Retail</button>
-          <button class="ghost" onclick="loadPack('dso')">Dental (DSO)</button>
-          <button class="ghost" onclick="loadPack('3pl')">3PL Logistics</button>
-          <button class="ghost" onclick="loadPack('saas')">SaaS B2B</button>
-          <button class="ghost" onclick="loadPack('realestate')">Real Estate</button>
-        </div>
-      </div>
-
-      <div class="lead">
-        <div class="muted" style="font-size:13px;margin-bottom:6px">Want this connected to your real systems?</div>
-        <button id="cta">Request Integration</button>
-      </div>
     </div>
-  </aside>
-</div>
-
-<!-- Lead Modal -->
-<div id="leadModal" class="modal">
-  <div class="sheet">
-    <h3 style="margin:0 0 8px 0">Request Integration</h3>
-    <div class="field"><label>Name</label><input id="leadName" placeholder="Your name"></div>
-    <div class="field"><label>Email</label><input id="leadEmail" placeholder="you@company.com"></div>
-    <div class="field"><label>Company</label><input id="leadCompany" placeholder="Company"></div>
-    <div class="field"><label>Notes</label><textarea id="leadNote" rows="3" placeholder="What should we connect first?"></textarea></div>
-    <div class="row" style="justify-content:flex-end;margin-top:10px">
-      <button class="ghost" onclick="closeLead()">Cancel</button>
-      <button onclick="submitLead()">Send</button>
+    <div class="row">
+      <button id="kbCancel" class="ghost">Cancel</button>
+      <button id="kbSave">Save</button>
     </div>
   </div>
 </div>
 
 <script>
-/* ---------- simple state ---------- */
-let messages = []; // {role:'user'|'assistant', html, intent?, entities?, raw?}
-let lastAssistantPlain = ""; // for TTS
+/* ===== State ===== */
+let messages = []; // {role:'user'|'assistant', html, raw?}
+let rec, recActive=false, recTimer=null; // mic
 const $stream = document.getElementById('stream');
 const $prompt = document.getElementById('prompt');
 const $send = document.getElementById('send');
-const $kb = document.getElementById('kb');
-const $saveKb = document.getElementById('saveKb');
-const $cta = document.getElementById('cta');
 const $mic = document.getElementById('mic');
-const $tts = document.getElementById('tts');
+const $kbModal = document.getElementById('kbModal');
+const $kbText = document.getElementById('kbText');
+const $kbSave = document.getElementById('kbSave');
+const $kbCancel = document.getElementById('kbCancel');
+const $gear = document.getElementById('gear');
 
-try { const saved = localStorage.getItem('demo_kb'); if (saved) $kb.value = saved; } catch {}
+try { const saved = localStorage.getItem('demo_kb'); if (saved) $kbText.value = saved; } catch {}
 
-/* ---------- rendering ---------- */
+/* ===== Render ===== */
 function scrollToBottom(){ $stream.scrollTop = $stream.scrollHeight; }
-function mdEscape(s){ return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function esc(s){ return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 function tableHTML(t){
   if (!t || !t.columns || !t.rows) return '';
   let h = '<table><thead><tr>';
-  for (const c of t.columns) h += `<th>${mdEscape(String(c))}</th>`;
+  for (const c of t.columns) h += `<th>${esc(String(c))}</th>`;
   h += '</tr></thead><tbody>';
-  for (const r of t.rows) h += '<tr>' + r.map(v => `<td>${mdEscape(String(v))}</td>`).join('') + '</tr>';
+  for (const r of t.rows) h += '<tr>' + r.map(v => `<td>${esc(String(v))}</td>`).join('') + '</tr>';
   h += '</tbody></table>'; return h;
 }
-function assistantHTMLFromResponse(json){
-  const nl = json.nl ? `<div class="card"><div>${mdEscape(json.nl)}</div></div>` : '';
+function assistantHTML(json){
+  const nl = json.nl ? `<div>${esc(json.nl)}</div>` : '';
   const answer = (() => {
     if (json.answer?.format === 'table') {
-      return `<div class="card"><h3>Answer</h3><div class="muted">${mdEscape(json.answer.summary||'')}</div>${tableHTML(json.answer.value)}</div>`;
+      return `<div class="card"><h3>Answer</h3><div style="color:#6b7280">${esc(json.answer.summary||'')}</div>${tableHTML(json.answer.value)}</div>`;
     }
-    return `<div class="card"><h3>Answer</h3><div>${mdEscape(json.answer?.value||'')}</div></div>`;
+    return `<div class="card"><h3>Answer</h3><div>${esc(json.answer?.value||'')}</div></div>`;
   })();
-  const explain = `<div class="card"><h3>How it worked</h3><ol>${(json.explain?.steps||[]).map(s => `<li>${mdEscape(s)}</li>`).join('')}</ol></div>`;
-  const impact = `<div class="card"><h3>Why it matters</h3><ul>${(json.impact?.bullets||[]).map(s => `<li>${mdEscape(s)}</li>`).join('')}</ul>${
-    (json.impact?.ctas||[]).map(c => `<button onclick="openLead('${json.meta?.intent||''}','${json.meta?.trace_id||''}')">${mdEscape(c.label)}</button>`).join(' ')
+  const explain = `<div class="card"><h3>How it worked</h3><ol>${(json.explain?.steps||[]).map(s=>`<li>${esc(s)}</li>`).join('')}</ol></div>`;
+  const impact = `<div class="card"><h3>Why it matters</h3><ul>${(json.impact?.bullets||[]).map(s=>`<li>${esc(s)}</li>`).join('')}</ul>${
+    (json.impact?.ctas||[]).map(c=>`<button class="ghost" onclick="openLead()">${esc(c.label)}</button>`).join(' ')
   }</div>`;
-  const meta = `<div class="meta"><span class="chip">Intent: ${mdEscape(json.meta?.intent||'')}</span><span class="chip">Template: ${mdEscape(json.meta?.template_id||'')}</span><span class="chip">Trace: ${mdEscape(json.meta?.trace_id||'')}</span></div>`;
-  lastAssistantPlain = (json.nl || "");
-  return `<div class="cards">${nl}${answer}${explain}${impact}</div>${meta}`;
+  const meta = `<div class="meta"><span class="chip">Intent: ${esc(json.meta?.intent||'')}</span><span class="chip">Template: ${esc(json.meta?.template_id||'')}</span><span class="chip">Trace: ${esc(json.meta?.trace_id||'')}</span></div>`;
+  return `${nl}<div class="cards">${answer}${explain}${impact}</div>${meta}`;
 }
 function render(){
   $stream.innerHTML = messages.map(m => {
     const role = m.role === 'user' ? 'user' : 'assistant';
-    return `<div class="msg ${role}"><div class="bubble">${role==='user'?'<div class="role muted">You</div>':'<div class="role muted">Demo Agent</div>'}${m.html}</div></div>`;
+    return `<div class="msg ${role}"><div class="bubble">${role==='user'?'<div class="role">You</div>':'<div class="role">Demo Agent</div>'}${m.html}</div></div>`;
   }).join('');
   scrollToBottom();
 }
-function pushUser(text){ messages.push({ role:'user', html: mdEscape(text) }); render(); }
+function pushUser(text){ messages.push({ role:'user', html: esc(text) }); render(); }
 function pushAssistantThinking(){ messages.push({ role:'assistant', html: `<span class="dots"></span>` }); render(); return messages.length-1; }
 function replaceAssistant(i, html){ messages[i] = { role:'assistant', html }; render(); }
 
-/* ---------- API call with memory ---------- */
-function buildHistoryForAPI(){
-  // Keep only compact “plan” memory: last intent/entities per assistant turn
+/* ===== Memory → backend ===== */
+function buildHistory(){
   const hist = [];
   for (const m of messages){
     if (m.role==='user') hist.push({ role:'user', text: m.html.replace(/<[^>]+>/g,'') });
@@ -183,85 +165,76 @@ function buildHistoryForAPI(){
       hist.push({ role:'assistant', intent: m.raw.meta.intent, entities: m.raw.entities||{} });
     }
   }
-  return hist.slice(-12); // last ~6 exchanges
+  return hist.slice(-12);
 }
-async function sendMessage(text){
-  // user bubble
-  pushUser(text);
-  $prompt.value = ''; $prompt.focus();
 
-  // assistant placeholder
+/* ===== API ===== */
+async function sendMessage(text){
+  pushUser(text);
+  $prompt.value='';
   const idx = pushAssistantThinking();
 
-  // KB
-  let kb = {}; try { kb = JSON.parse($kb.value); } catch {}
+  let kb={};
+  try{ kb = JSON.parse($kbText.value); }catch{}
 
   $send.disabled = true;
   try{
     const res = await fetch('/api/demoAgent', {
-      method: 'POST',
-      headers: { 'Content-Type':'application/json' },
-      body: JSON.stringify({ utterance: text, kb, demo: true, history: buildHistoryForAPI() })
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ utterance: text, kb, demo: true, history: buildHistory() })
     });
-    if (!res.ok) throw new Error('HTTP '+res.status);
-    const json = await res.json();
-    const html = assistantHTMLFromResponse(json);
-    messages[idx] = { role:'assistant', html, raw: { meta: json.meta, entities: json.meta?.entities } };
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const j = await res.json();
+    messages[idx] = { role:'assistant', html: assistantHTML(j), raw:{ meta:j.meta } };
     render();
-  } catch(e){
-    replaceAssistant(idx, `<div class="card">Sorry, I couldn’t process that. (${mdEscape(String(e.message||e))})</div>`);
-  } finally {
+  }catch(e){
+    replaceAssistant(idx, `<div class="card">Error: ${esc(String(e.message||e))}</div>`);
+  }finally{
     $send.disabled = false;
   }
 }
 
-/* ---------- Lead Modal ---------- */
-function openLead(intent, trace){ const m = document.getElementById('leadModal'); m.dataset.intent=intent||''; m.dataset.trace=trace||''; m.style.display='flex'; }
-function closeLead(){ document.getElementById('leadModal').style.display='none'; }
-async function submitLead(){
-  const name=document.getElementById('leadName').value.trim();
-  const email=document.getElementById('leadEmail').value.trim();
-  const company=document.getElementById('leadCompany').value.trim();
-  const note=document.getElementById('leadNote').value.trim();
-  const modal=document.getElementById('leadModal');
-  const intent=modal.dataset.intent||'connect_systems'; const trace_id=modal.dataset.trace||'';
-  try{
-    const r = await fetch('/api/requestIntegration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,email,company,note,intent,trace_id})});
-    const j = await r.json();
-    alert(j.ok ? 'Thanks! We will reach out.' : 'Something failed.');
-  }catch{ alert('Network error.'); }
-  closeLead();
+/* ===== Composer wiring ===== */
+function onSend(){
+  const t = $prompt.value.trim();
+  if (t) sendMessage(t);
 }
-window.openLead=openLead; window.closeLead=closeLead; window.submitLead=submitLead;
+$send.addEventListener('click', onSend);
+$prompt.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSend(); }
+});
 
-/* ---------- Industry Packs ---------- */
-function loadPack(id){
-  const packs = {
-    retail: {"company_id":"retail-001","company_name":"Lumina Streetwear","sector":"Retail","primary_region":"Barcelona","example_top_product":"Aurora Hoodie","example_top_region":"Catalunya","example_employee_1":"J. Serra","example_employee_2":"M. Vidal","example_employee_3":"D. Ortiz"},
-    dso: {"company_id":"dso-001","company_name":"SmileBridge DSO","sector":"Dental","primary_region":"California","example_top_product":"Invisalign Package","example_top_region":"Bay Area","example_employee_1":"Dr. Chen","example_employee_2":"RDA Lopez","example_employee_3":"Hyg. Patel","tone":"clinical, reassuring"},
-    "3pl": {"company_id":"3pl-001","company_name":"SwiftFulfill 3PL","sector":"Logistics","primary_region":"Netherlands","example_top_product":"EU Fulfillment","example_top_region":"Benelux","example_employee_1":"K. Janssen","example_employee_2":"T. Visser","example_employee_3":"S. Bakker"},
-    saas: {"company_id":"saas-001","company_name":"DataScale Cloud","sector":"SaaS","primary_region":"UK","example_top_product":"Analytics Pro","example_top_region":"EMEA","example_employee_1":"A. Hughes","example_employee_2":"R. Patel","example_employee_3":"S. Khan"},
-    realestate: {"company_id":"re-001","company_name":"Marbella Prime Realty","sector":"Real Estate","primary_region":"Andalucía","example_top_product":"Luxury Villa Listings","example_top_region":"Costa del Sol","example_employee_1":"E. Garcia","example_employee_2":"L. Martin","example_employee_3":"P. Gomez"}
-  };
-  $kb.value = JSON.stringify(packs[id], null, 2);
-  try { localStorage.setItem('demo_kb', $kb.value); } catch {}
-  const idx = pushAssistantThinking();
-  replaceAssistant(idx, `<div class="card"><h3>KB Loaded</h3><div class="muted">Applied the ${id.toUpperCase()} pack.</div></div>`);
-}
-window.loadPack = loadPack;
-
-/* ---------- Voice (mic) + TTS ---------- */
-let rec, recActive=false;
+/* ===== Mic (press & hold) ===== */
 function startRec(){
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) { alert('Speech recognition not supported in this browser.'); return; }
-  rec = new SR(); rec.lang = 'en-US'; rec.interimResults = false; rec.maxAlternatives = 1;
-  rec.onresult = (e)=>{ const text = e.results[0][0].transcript; $prompt.value = text; sendFromInput(); };
-  rec.onerror = ()=>{ recActive=false; $mic.textContent='🎤'; };
-  rec.onend = ()=>{ recActive=false; $mic.textContent='🎤'; };
-  recActive=true; $mic.textContent='●'; rec.start();
+  if (!SR) { alert('Speech recognition is not supported in this browser.'); return; }
+  rec = new SR(); rec.lang='en-US'; rec.interimResults=false; rec.maxAlternatives=1;
+  rec.onresult = e => { const t = e.results[0][0].transcript; $prompt.value = t; onSend(); };
+  rec.onerror = () => stopRec();
+  rec.onend = () => stopRec();
+  recActive = true; $mic.textContent='⏺';
+  rec.start();
 }
-function ttsSpeak(text){
-  if (!window.speechSynthesis) return alert('TTS not supported in this browser.');
-  const u = new SpeechSynthesisUtterance(text); u.rate=1; u.pitch=1; u.volume=1;
-  speechSynthesis.cancel(); sp
+function stopRec(){ try{ rec && rec.stop(); }catch{} recActive=false; $mic.textContent='🎤'; if(recTimer){clearTimeout(recTimer);recTimer=null;} }
+$mic.addEventListener('mousedown', () => { if(!recActive) startRec(); });
+$mic.addEventListener('touchstart', (e) => { e.preventDefault(); if(!recActive) startRec(); }, {passive:false});
+['mouseup','mouseleave','touchend','touchcancel'].forEach(evt => $mic.addEventListener(evt, stopRec));
+
+/* ===== KB modal ===== */
+function openKB(){ $kbModal.style.display='flex'; }
+function closeKB(){ $kbModal.style.display='none'; }
+$gear.addEventListener('click', openKB);
+$kbCancel.addEventListener('click', closeKB);
+$kbSave.addEventListener('click', () => { try{ localStorage.setItem('demo_kb', $kbText.value); }catch{} closeKB(); });
+
+/* ===== Lead (very simple) ===== */
+function openLead(){ alert("We'll connect this to a lead form / CRM next."); }
+window.openLead = openLead;
+
+/* ===== Welcome ===== */
+messages.push({ role:'assistant', html: `<div>Hi! I’m your digital employee. Ask me anything about your business — I’ll answer naturally, show <em>how</em> I’d do it, and why it matters. This is a demo (simulated numbers) tailored by your Company KB.</div>` });
+render();
+</script>
+</body>
+</html>
