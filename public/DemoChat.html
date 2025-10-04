@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Universal Demo Agent</title>
+<title>Your AI Employee</title>
 <style>
   :root{
     --bg:#f6f7fb; --panel:#ffffff; --ink:#0b0c10; --muted:#647085; --line:#e6e8f0; --accent:#0ea5e9;
@@ -12,13 +12,16 @@
   *{box-sizing:border-box} html,body{height:100%}
   body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 ui-sans-serif,system-ui,Inter,Segoe UI,Arial}
   .app{display:flex;flex-direction:column;height:100%}
-  header{position:sticky;top:0;background:var(--panel);border-bottom:1px solid var(--line);padding:12px 16px;display:flex;align-items:center;gap:12px;z-index:10}
+
+  header{position:sticky;top:0;background:var(--panel);border-bottom:1px solid var(--line);
+    padding:12px 16px;display:flex;align-items:center;gap:12px;z-index:10}
   header h1{font-size:15px;font-weight:600;margin:0}
   .toggle{display:flex;border:1px solid var(--line);border-radius:999px;overflow:hidden}
   .toggle button{border:none;background:#fff;padding:8px 12px;cursor:pointer;font-weight:600;color:#334155}
   .toggle button.active{background:var(--ink);color:#fff}
-  .gear{margin-left:auto}
   .icon-btn{width:38px;height:38px;border-radius:10px;border:1px solid var(--line);display:flex;align-items:center;justify-content:center;background:#fff;cursor:pointer}
+  .spacer{flex:1}
+
   main{flex:1;overflow:auto}
   .stream{max-width:820px;margin:0 auto;padding:16px}
   .msg{display:flex;margin:14px 0}
@@ -26,6 +29,7 @@
   .bubble{max-width:720px;border:1px solid var(--line);background:var(--bubble-ai);padding:12px 14px;border-radius:18px;box-shadow:0 1px 0 rgba(0,0,0,.03)}
   .msg.user .bubble{background:var(--bubble-user)}
   .role{font-size:12px;color:var(--muted);margin-bottom:6px}
+
   .cards{display:grid;gap:10px;margin-top:6px}
   .card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px}
   .card h3{margin:0 0 6px 0;font-size:14px}
@@ -33,19 +37,26 @@
   th,td{border:1px solid var(--line);padding:8px;text-align:left}
   .meta{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
   .chip{font-size:12px;border:1px solid var(--line);padding:3px 8px;border-radius:999px;color:#647085;background:#fff}
+
   footer{position:sticky;bottom:0;background:var(--panel);border-top:1px solid var(--line);padding:12px 16px}
   .composer{max-width:820px;margin:0 auto}
   .row{display:flex;gap:10px;align-items:center}
   .grow{flex:1}
-  input,button,textarea,select{font:inherit}
+  input,button,textarea{font:inherit}
+
   .box{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:8px 10px}
   input[type="text"]{flex:1;border:none;outline:none;background:transparent;padding:8px 6px}
   button{border:none;background:var(--accent);color:#fff;padding:10px 14px;border-radius:12px;font-weight:600;cursor:pointer}
   button.ghost{background:#eef2f7;color:#0b0c10}
   button:disabled{opacity:.6;cursor:not-allowed}
-  .dots{display:inline-block;min-width:28px}
-  .dots:after{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:#111;box-shadow:8px 0 0 #111,16px 0 0 #111;animation:pulse 1s infinite steps(1)}
-  @keyframes pulse{0%{opacity:.2}50%{opacity:1}100%{opacity:.2}}
+
+  /* Voice call area */
+  .callWrap{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8px 0}
+  .viz{width:84px;height:84px;border-radius:999px;background:#eaf6ff;border:2px solid #bfe7ff;
+    box-shadow:0 8px 30px rgba(14,165,233,.15);transform:scale(1);transition:transform .08s linear}
+  .status{margin-top:8px;color:#647085;font-weight:600}
+  .sub{font-size:12px;color:#9aa6b2;margin-top:2px}
+
   /* KB modal */
   .modal{position:fixed;inset:0;background:rgba(0,0,0,.35);display:none;align-items:center;justify-content:center;z-index:50}
   .sheet{width:min(720px,92%);background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px}
@@ -53,58 +64,44 @@
   .field{display:flex;flex-direction:column;gap:6px;margin:8px 0}
   .field textarea{width:100%;height:220px;border:1px solid var(--line);border-radius:10px;padding:10px;font-family:ui-monospace,Menlo,monospace}
   .sheet .row{justify-content:flex-end}
-  /* voice controls */
-  .voiceBar{display:flex;gap:8px;align-items:center;margin-top:8px;color:#647085;font-size:13px}
-  .pill{border:1px solid var(--line);border-radius:999px;padding:4px 8px;background:#fff}
 </style>
 </head>
 <body>
 <div class="app">
   <header>
-    <h1>Universal Demo Agent</h1>
+    <h1>Your AI Employee</h1>
     <div class="toggle" id="modeToggle">
       <button data-mode="text" class="active">Text</button>
       <button data-mode="voice">Voice</button>
     </div>
-    <div class="gear">
-      <button id="gearBtn" class="icon-btn" title="Company KB">⚙️</button>
-    </div>
+    <div class="spacer"></div>
+    <button id="gearBtn" class="icon-btn" title="Company KB">⚙️</button>
   </header>
 
   <main>
     <div id="stream" class="stream"></div>
+    <div id="callArea" class="callWrap" style="display:none">
+      <div id="viz" class="viz"></div>
+      <div id="callStatus" class="status">Idle</div>
+      <div class="sub">Hands-free: say your request, I’ll reply, then listen again.</div>
+    </div>
   </main>
 
   <footer>
+    <!-- TEXT COMPOSER -->
     <div class="composer" id="composerText">
       <div class="row box">
         <input id="prompt" type="text" placeholder="Ask anything for your business…" />
         <button id="send">Send</button>
       </div>
-      <div style="font-size:12px;color:#6b7280;margin-top:6px">Tip: “How much inventory for Ultra Hoodie?”, “What was our revenue last week?”, “Simulate a customer call about pricing.”</div>
     </div>
 
+    <!-- VOICE COMPOSER -->
     <div class="composer" id="composerVoice" style="display:none">
-      <div class="row box">
+      <div class="row box" style="justify-content:center">
         <button id="startCall" class="ghost">Start Voice</button>
         <button id="stopCall" class="ghost" disabled>Stop</button>
-        <span id="callStatus" class="pill">Idle</span>
-      </div>
-      <div class="voiceBar">
-        <span>STT:</span>
-        <select id="langSel">
-          <option value="en-US">English (US)</option>
-          <option value="en-GB">English (UK)</option>
-          <option value="es-ES">Español (ES)</option>
-          <option value="fr-FR">Français (FR)</option>
-        </select>
-        <span>Voice:</span>
-        <select id="rateSel">
-          <option value="1">Normal</option>
-          <option value="0.9">Slightly slow</option>
-          <option value="1.1">Slightly fast</option>
-        </select>
-        <span class="muted">You speak → agent replies out loud → you speak again.</span>
+        <span id="langNote" class="sub" style="margin-left:8px">English</span>
       </div>
     </div>
   </footer>
@@ -136,27 +133,28 @@
 </div>
 
 <script>
-/* ===== State & helpers ===== */
-let messages = []; // {role:'user'|'assistant', html, raw?}
+/* ====== State ====== */
+let messages = []; // chat history (for Text mode UI + memory)
 const $stream = document.getElementById('stream');
-const $prompt = document.getElementById('prompt');
-const $send = document.getElementById('send');
-const $modeToggle = document.getElementById('modeToggle');
 const $composerText = document.getElementById('composerText');
 const $composerVoice = document.getElementById('composerVoice');
+const $modeToggle = document.getElementById('modeToggle');
+const $prompt = document.getElementById('prompt');
+const $send = document.getElementById('send');
 const $startCall = document.getElementById('startCall');
-const $stopCall  = document.getElementById('stopCall');
+const $stopCall = document.getElementById('stopCall');
+const $callArea = document.getElementById('callArea');
 const $callStatus = document.getElementById('callStatus');
+const $viz = document.getElementById('viz');
 const $gearBtn = document.getElementById('gearBtn');
 const $kbModal = document.getElementById('kbModal');
 const $kbText = document.getElementById('kbText');
 const $kbSave = document.getElementById('kbSave');
 const $kbCancel = document.getElementById('kbCancel');
-const $langSel = document.getElementById('langSel');
-const $rateSel = document.getElementById('rateSel');
 
 try { const saved = localStorage.getItem('demo_kb'); if (saved) $kbText.value = saved; } catch {}
 
+/* ====== Chat rendering (Text mode only) ====== */
 function esc(s){ return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 function tableHTML(t){ if(!t||!t.columns||!t.rows) return ''; let h='<table><thead><tr>'; for(const c of t.columns) h+=`<th>${esc(String(c))}</th>`; h+='</tr></thead><tbody>'; for(const r of t.rows) h+='<tr>'+r.map(v=>`<td>${esc(String(v))}</td>`).join('')+'</tr>'; h+='</tbody></table>'; return h; }
 function assistantHTML(j){
@@ -172,15 +170,16 @@ function assistantHTML(j){
 function render(){
   $stream.innerHTML = messages.map(m=>{
     const role = m.role==='user'?'user':'assistant';
-    return `<div class="msg ${role}"><div class="bubble">${role==='user'?'<div class="role">You</div>':'<div class="role">Demo Agent</div>'}${m.html}</div></div>`;
+    return `<div class="msg ${role}"><div class="bubble">${role==='user'?'<div class="role">You</div>':'<div class="role">Your AI Employee</div>'}${m.html}</div></div>`;
   }).join('');
   $stream.scrollTop = $stream.scrollHeight;
 }
-function pushUser(t){ messages.push({role:'user', html:esc(t)}); render(); }
-function thinking(){ messages.push({role:'assistant', html:'<span class="dots"></span>'}); render(); return messages.length-1; }
-function replaceAssistant(i, html){ messages[i]={role:'assistant', html}; render(); }
+function pushUser(text){ messages.push({role:'user', html:esc(text)}); render(); }
+function pushAssistant(j){ messages.push({role:'assistant', html:assistantHTML(j), raw:{meta:j.meta}}); render(); }
+
+/* ====== API helpers ====== */
 function historyForAPI(){
-  const h=[]; for(const m of messages){ if(m.role==='user') h.push({role:'user',text:m.html.replace(/<[^>]+>/g,'')}); if(m.role==='assistant'&&m.raw?.meta){ h.push({role:'assistant',intent:m.raw.meta.intent,entities:m.raw.entities||{}}); } }
+  const h=[]; for(const m of messages){ if(m.role==='user') h.push({role:'user',text:m.html.replace(/<[^>]+>/g,'')}); if(m.role==='assistant' && m.raw?.meta){ h.push({role:'assistant',intent:m.raw.meta.intent,entities:m.raw.entities||{}}); } }
   return h.slice(-12);
 }
 async function askAPI(text){
@@ -190,86 +189,145 @@ async function askAPI(text){
   return r.json();
 }
 
-/* ===== Text mode ===== */
+/* ====== TEXT MODE ====== */
 function sendText(){
   const t = $prompt.value.trim(); if(!t) return;
   pushUser(t); $prompt.value='';
-  const idx=thinking();
-  askAPI(t).then(j=>{ messages[idx]={role:'assistant', html:assistantHTML(j), raw:{meta:j.meta}}; render(); })
-           .catch(e=> replaceAssistant(idx, `<div class="card">Error: ${esc(String(e.message||e))}</div>`));
+  askAPI(t).then(pushAssistant).catch(e=>pushAssistant({ nl:`Error: ${esc(String(e.message||e))}`, answer:{format:'text',value:''}, explain:{steps:[]}, impact:{bullets:[]}, meta:{} }));
 }
 $send.addEventListener('click', sendText);
 $prompt.addEventListener('keydown', e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendText(); }});
 
-/* ===== Voice mode (turn-based “call”) ===== */
-let sr=null, speaking=false, listening=false;
-function supportSTT(){ return !!(window.SpeechRecognition || window.webkitSpeechRecognition); }
-function speak(text){
-  if(!window.speechSynthesis){ return; }
-  speaking=true;
-  const u = new SpeechSynthesisUtterance(text);
-  u.rate = Number($rateSel.value || '1');
-  speechSynthesis.cancel(); speechSynthesis.speak(u);
-  u.onend = ()=>{ speaking=false; if(listening){ startListen(); } };
+/* ====== VOICE MODE ======
+   - English only (en-US)
+   - Always-on loop: listen → send → speak → listen …
+   - No transcripts/bubbles; only the animated circle + status
+============================================================= */
+let audioCtx=null, analyser=null, micSource=null, rafId=null;
+let sr=null, listening=false, speaking=false;
+
+function haveSTT(){ return !!(window.SpeechRecognition || window.webkitSpeechRecognition); }
+
+async function initMicVisualizer(){
+  if (audioCtx) return;
+  const stream = await navigator.mediaDevices.getUserMedia({ audio:true });
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 512;
+  micSource = audioCtx.createMediaStreamSource(stream);
+  micSource.connect(analyser);
 }
+
+function startViz(){ // animate circle based on mic RMS when listening; gentle pulse when speaking
+  const data = new Uint8Array(analyser.frequencyBinCount);
+  function tick(){
+    if (!analyser){ rafId = requestAnimationFrame(tick); return; }
+    if (listening){
+      analyser.getByteTimeDomainData(data);
+      // RMS of waveform around 128
+      let sum=0;
+      for (let i=0;i<data.length;i++){ const v=(data[i]-128)/128; sum+=v*v; }
+      const rms = Math.sqrt(sum/data.length); // 0..~1
+      const scale = 1 + Math.min(0.9, rms*3); // scale up with voice
+      $viz.style.transform = `scale(${scale.toFixed(2)})`;
+    } else if (speaking){
+      // soft breathing animation
+      const t = Date.now()/500;
+      const scale = 1 + 0.08*Math.sin(t*2*Math.PI);
+      $viz.style.transform = `scale(${scale.toFixed(2)})`;
+    } else {
+      $viz.style.transform = 'scale(1)';
+    }
+    rafId = requestAnimationFrame(tick);
+  }
+  rafId = requestAnimationFrame(tick);
+}
+
+function speakOut(text){
+  if (!window.speechSynthesis) return;
+  speaking=true; listening=false; $callStatus.textContent='Speaking…';
+  const u = new SpeechSynthesisUtterance(text||'');
+  u.lang = 'en-US'; u.rate = 1; u.pitch = 1;
+  speechSynthesis.cancel(); speechSynthesis.speak(u);
+  u.onend = ()=>{ speaking=false; startListen(); };
+}
+
 function startListen(){
-  if(!supportSTT()){ alert('Speech recognition is not supported in this browser.'); return; }
+  if (!haveSTT()){ alert('Speech recognition not supported in this browser.'); stopCall(); return; }
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  sr = new SR(); sr.lang=$langSel.value || 'en-US'; sr.interimResults=false; sr.maxAlternatives=1;
-  listening=true; $callStatus.textContent='Listening…';
-  sr.onresult = e=>{
+  sr = new SR(); sr.lang='en-US'; sr.interimResults=false; sr.maxAlternatives=1; sr.continuous=false;
+  listening = true; $callStatus.textContent='Listening…';
+  sr.onresult = e => {
     const text = e.results[0][0].transcript;
-    pushUser(text);
-    const idx = thinking();
+    // Do NOT render transcript (voice mode is transcript-less)
     $callStatus.textContent='Thinking…';
     askAPI(text).then(j=>{
-      messages[idx]={role:'assistant', html:assistantHTML(j), raw:{meta:j.meta}}; render();
-      $callStatus.textContent='Speaking…';
-      speak((j.nl||''));
+      // Voice mode: speak response; also show cards minimally (optional)
+      // We’ll still append cards for credibility:
+      messages.push({ role:'assistant', html:assistantHTML(j), raw:{meta:j.meta} });
+      render();
+      speakOut(j.nl || 'Here is the answer.');
     }).catch(err=>{
-      replaceAssistant(idx, `<div class="card">Error: ${esc(String(err.message||err))}</div>`);
-      $callStatus.textContent='Idle';
+      speaking=false; listening=false;
+      $callStatus.textContent='Error';
     });
   };
-  sr.onerror = ()=>{ listening=false; $callStatus.textContent='Idle'; };
-  sr.onend = ()=>{ listening=false; if(!speaking){ $callStatus.textContent='Waiting… (press Start)'; } };
+  sr.onerror = () => { if (!speaking) setTimeout(startListen, 300); };
+  sr.onend = () => { if (!speaking) setTimeout(startListen, 150); }; // auto-restart (always-on)
   sr.start();
 }
-function startCall(){
-  if(listening || speaking) return;
+
+async function startCall(){
   $startCall.disabled=true; $stopCall.disabled=false;
-  $callStatus.textContent='Listening…'; listening=true;
-  startListen();
+  $callArea.style.display='flex'; $composerVoice.querySelector('.row').style.pointerEvents='none';
+  try{
+    await initMicVisualizer(); startViz();
+    startListen(); // kicks off the loop
+  } catch {
+    $callStatus.textContent='Mic access denied';
+  }
 }
 function stopCall(){
-  try{ sr && sr.stop(); }catch{}
+  try{ sr && sr.abort(); }catch{}
   try{ speechSynthesis.cancel(); }catch{}
-  speaking=false; listening=false;
-  $startCall.disabled=false; $stopCall.disabled=true;
+  listening=false; speaking=false;
   $callStatus.textContent='Idle';
+  $startCall.disabled=false; $stopCall.disabled=true;
+  if (rafId) cancelAnimationFrame(rafId);
+  $viz.style.transform='scale(1)';
+  $composerVoice.querySelector('.row').style.pointerEvents='auto';
 }
+
 $startCall.addEventListener('click', startCall);
 $stopCall.addEventListener('click', stopCall);
 
-/* ===== Mode toggle ===== */
+/* ====== Mode toggle ====== */
 $modeToggle.addEventListener('click', (e)=>{
-  const btn = e.target.closest('button'); if(!btn) return;
-  [...$modeToggle.querySelectorAll('button')].forEach(b=>b.classList.remove('active'));
-  btn.classList.add('active');
-  const m = btn.dataset.mode;
-  if(m==='text'){ $composerText.style.display='block'; $composerVoice.style.display='none'; stopCall(); }
-  else { $composerText.style.display='none'; $composerVoice.style.display='block'; }
+  const b=e.target.closest('button'); if(!b) return;
+  [...$modeToggle.querySelectorAll('button')].forEach(x=>x.classList.remove('active'));
+  b.classList.add('active');
+  const m=b.dataset.mode;
+  if (m==='text'){
+    $composerText.style.display='block';
+    $composerVoice.style.display='none';
+    $callArea.style.display='none';
+    stopCall();
+  } else {
+    $composerText.style.display='none';
+    $composerVoice.style.display='block';
+    $callArea.style.display='flex';
+  }
 });
 
-/* ===== KB modal ===== */
+/* ====== KB Modal ====== */
 function openKB(){ $kbModal.style.display='flex'; }
 function closeKB(){ $kbModal.style.display='none'; }
 $gearBtn.addEventListener('click', openKB);
 $kbCancel.addEventListener('click', closeKB);
 $kbSave.addEventListener('click', ()=>{ try{ localStorage.setItem('demo_kb', $kbText.value);}catch{} closeKB(); });
 
-/* ===== Welcome ===== */
-messages.push({role:'assistant', html:`<div>Welcome! Choose <b>Text</b> or <b>Voice</b> at the top. In Voice, it works like a call: you speak, I answer out loud, then I listen again. This is a demo with simulated numbers tailored by your Company KB.</div>`});
+/* ====== Welcome bubble (Text mode) ====== */
+messages.push({ role:'assistant', html:`<div>Hi! I’m your AI Employee. Use <b>Text</b> or switch to <b>Voice</b> for a hands-free conversation. I’ll answer naturally, show how I would do it, and why it matters. This is a demo with simulated numbers, tailored by your Company KB.</div>` });
 render();
 </script>
 </body>
