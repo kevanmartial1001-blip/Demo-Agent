@@ -8,6 +8,7 @@
   :root{
     --bg:#f6f7fb; --panel:#ffffff; --ink:#0b0c10; --muted:#647085; --line:#e6e8f0; --accent:#0ea5e9;
     --bubble-user:#e8f3ff; --bubble-ai:#ffffff;
+    --speak:#1e90ff; --listen:#10b981;
   }
   *{box-sizing:border-box} html,body{height:100%}
   body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 ui-sans-serif,system-ui,Inter,Segoe UI,Arial}
@@ -45,13 +46,21 @@
   .box{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:8px 10px}
   input[type="text"]{flex:1;border:none;outline:none;background:transparent;padding:8px 6px}
   button{border:none;background:var(--accent);color:#fff;padding:10px 14px;border-radius:12px;font-weight:600;cursor:pointer}
+  button.ghost{background:#eef2f7;color:#0b0c10}
   button:disabled{opacity:.6;cursor:not-allowed}
 
-  /* Voice canvas */
-  .callWrap{display:none;flex-direction:column;align-items:center;justify-content:center;min-height:60vh;padding:8px 0}
-  .viz{width:110px;height:110px;border-radius:999px;background:#eaf6ff;border:2px solid #bfe7ff;
-    box-shadow:0 12px 40px rgba(14,165,233,.18);transform:scale(1);transition:transform .08s linear}
-  .status{margin-top:14px;color:#647085;font-weight:600}
+  /* Voice Note controls */
+  .vn-controls{display:flex;gap:10px;align-items:center;justify-content:center}
+  .pill{border:1px solid var(--line);border-radius:999px;padding:6px 10px;background:#fff;color:#647085;font-weight:600}
+
+  /* Call canvas */
+  .callWrap{display:none;flex-direction:column;align-items:center;justify-content:center;min-height:62vh;padding:8px 0}
+  .viz{
+    width:120px;height:120px;border-radius:999px;background:#eaf6ff;border:3px solid #bfe7ff;
+    box-shadow:0 12px 40px rgba(14,165,233,.18);
+    transform:scale(1);transition:transform .08s linear, border-color .15s ease, box-shadow .15s ease;
+  }
+  .status{margin-top:16px;color:#647085;font-weight:700}
   .prompt{font-size:13px;color:#9aa6b2;margin-top:4px}
 
   /* KB modal */
@@ -69,7 +78,8 @@
     <h1>Your AI Employee</h1>
     <div class="toggle" id="modeToggle">
       <button data-mode="text" class="active">Text</button>
-      <button data-mode="voice">Voice</button>
+      <button data-mode="voicenote">Voice Note</button>
+      <button data-mode="call">Call</button>
     </div>
     <div class="spacer"></div>
     <button id="gearBtn" class="icon-btn" title="Company KB">⚙️</button>
@@ -79,7 +89,20 @@
     <!-- TEXT STREAM -->
     <div id="stream" class="stream"></div>
 
-    <!-- VOICE CANVAS -->
+    <!-- VOICE NOTE UI -->
+    <div id="voiceNoteArea" class="stream" style="display:none;text-align:center">
+      <div class="vn-controls box" style="justify-content:center">
+        <button id="vnRecord" class="ghost">● Record</button>
+        <button id="vnStop" class="ghost" disabled>Stop</button>
+        <button id="vnSend" disabled>Send</button>
+        <span id="vnStatus" class="pill">Idle</span>
+      </div>
+      <div style="margin-top:12px">
+        <audio id="vnPlayer" controls style="display:none"></audio>
+      </div>
+    </div>
+
+    <!-- CALL CANVAS -->
     <div id="callArea" class="callWrap">
       <div id="viz" class="viz"></div>
       <div id="callStatus" class="status">Tell me, how can I help you today?</div>
@@ -124,10 +147,11 @@
 </div>
 
 <script>
-/* ===== Elements & state ===== */
-let messages = []; // text mode only
+/* ================== Elements & text-mode state ================== */
+let messages = []; // only for Text mode UI
 const $modeToggle = document.getElementById('modeToggle');
 const $stream = document.getElementById('stream');
+const $voiceNoteArea = document.getElementById('voiceNoteArea');
 const $textFooter = document.getElementById('textFooter');
 const $callArea = document.getElementById('callArea');
 const $viz = document.getElementById('viz');
@@ -142,7 +166,7 @@ const $kbCancel = document.getElementById('kbCancel');
 
 try { const saved = localStorage.getItem('demo_kb'); if (saved) $kbText.value = saved; } catch {}
 
-/* ===== Render (Text mode) ===== */
+/* ================== Text-mode rendering ================== */
 function esc(s){ return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 function tableHTML(t){ if(!t||!t.columns||!t.rows) return ''; let h='<table><thead><tr>'; for(const c of t.columns) h+=`<th>${esc(String(c))}</th>`; h+='</tr></thead><tbody>'; for(const r of t.rows) h+='<tr>'+r.map(v=>`<td>${esc(String(v))}</td>`).join('')+'</tr>'; h+='</tbody></table>'; return h; }
 function assistantHTML(j){
@@ -169,7 +193,7 @@ function historyForAPI(){
   return h.slice(-12);
 }
 
-/* ===== API helper ===== */
+/* ================== API helper ================== */
 async function askAPI(text){
   let kb={}; try{ kb=JSON.parse($kbText.value);}catch{}
   const r = await fetch('/api/demoAgent',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({utterance:text,kb, demo:true, history:historyForAPI()})});
@@ -177,7 +201,7 @@ async function askAPI(text){
   return r.json();
 }
 
-/* ===== Text mode events ===== */
+/* ================== Text mode events ================== */
 function sendText(){
   const t = $prompt.value.trim(); if(!t) return;
   pushUser(t); $prompt.value='';
@@ -186,147 +210,125 @@ function sendText(){
 $send.addEventListener('click', sendText);
 $prompt.addEventListener('keydown', e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendText(); }});
 
-/* ===== Voice mode (no transcripts; always-on) ===== */
+/* ================== Voice Note mode ================== */
+const $vnRecord = document.getElementById('vnRecord');
+const $vnStop = document.getElementById('vnStop');
+const $vnSend = document.getElementById('vnSend');
+const $vnStatus = document.getElementById('vnStatus');
+const $vnPlayer = document.getElementById('vnPlayer');
+
+let vnMediaRec=null, vnChunks=[], vnBlob=null, vnMime=null;
+
+$vnRecord?.addEventListener('click', async ()=>{
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation:true, noiseSuppression:true, autoGainControl:true } });
+    vnMime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
+    vnMediaRec = new MediaRecorder(stream,{ mimeType: vnMime });
+    vnChunks = [];
+    vnMediaRec.ondataavailable = e=>{ if (e.data?.size) vnChunks.push(e.data); };
+    vnMediaRec.onstart = ()=>{ $vnStatus.textContent='Recording…'; $vnRecord.disabled=true; $vnStop.disabled=false; $vnSend.disabled=true; $vnPlayer.style.display='none'; };
+    vnMediaRec.onstop = ()=>{
+      vnBlob = new Blob(vnChunks,{type: vnMime});
+      $vnPlayer.src = URL.createObjectURL(vnBlob);
+      $vnPlayer.style.display='inline-block';
+      $vnStatus.textContent='Ready to send';
+      $vnSend.disabled=false; $vnRecord.disabled=false; $vnStop.disabled=true;
+    };
+    vnMediaRec.start();
+  }catch(e){ $vnStatus.textContent='Mic permission needed'; }
+});
+$vnStop?.addEventListener('click', ()=>{ try{ vnMediaRec?.stop(); }catch{} });
+
+$vnSend?.addEventListener('click', async ()=>{
+  if(!vnBlob) return;
+  $vnSend.disabled=true; $vnStatus.textContent='Transcribing…';
+  const base64 = await blobToBase64(vnBlob);
+  const res = await fetch('/api/transcribe', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ audio: base64, mime: vnMime })
+  });
+  const j = await res.json();
+  if (!j.ok){ $vnStatus.textContent='Transcription failed'; $vnSend.disabled=false; return; }
+  const text = j.text || '';
+  pushUser(`(voice note) ${text}`);
+  askAPI(text).then(pushAssistant);
+  $vnStatus.textContent='Idle'; $vnSend.disabled=false;
+});
+function blobToBase64(blob){ return new Promise((resolve)=>{ const r=new FileReader(); r.onload=()=>resolve(r.result); r.readAsDataURL(blob); }); }
+
+/* ================== Call mode ================== */
 let audioCtx=null, analyser=null, micSource=null, rafId=null;
 let sr=null, listening=false, speaking=false;
-
-// --- TTS reliability helpers ---
 let selectedVoice = null;
 
-function getVoicesOnce() {
-  return new Promise((resolve) => {
-    const v = speechSynthesis.getVoices();
-    if (v && v.length) return resolve(v);
-    speechSynthesis.onvoiceschanged = () => resolve(speechSynthesis.getVoices());
-  });
-}
-async function pickEnglishVoice() {
-  if (!window.speechSynthesis) return null;
-  const voices = await getVoicesOnce();
-  const prefer = [
-    /en-US.*(Female|Samantha|Google US|Jenny|America|Karen|Alloy)/i,
-    /en-GB/i,
-    /en-/i
-  ];
-  for (const rx of prefer) {
-    const hit = voices.find(v => rx.test(`${v.name} ${v.lang}`));
-    if (hit) return hit;
-  }
-  return voices[0] || null;
-}
-async function ensureAudioReady() {
-  try { if (audioCtx && audioCtx.state === 'suspended') await audioCtx.resume(); } catch {}
-  try { speechSynthesis.resume(); } catch {}
-}
-async function speak(text) {
-  if (!window.speechSynthesis) return;
-  await ensureAudioReady();
-  if (!selectedVoice) selectedVoice = await pickEnglishVoice();
-
-  speaking = true; listening = false; $callStatus.textContent = '…';
-  const u = new SpeechSynthesisUtterance(text || '');
-  u.lang = 'en-US';
-  u.voice = selectedVoice || null;
-  u.rate = 1; u.pitch = 1; u.volume = 1;
-  speechSynthesis.cancel();
-  speechSynthesis.speak(u);
-  u.onend = () => { speaking = false; startListen(); };
-}
-
 function sttAvailable(){ return !!(window.SpeechRecognition || window.webkitSpeechRecognition); }
+function getVoicesOnce(){ return new Promise((resolve)=>{ const v=speechSynthesis.getVoices(); if(v&&v.length) return resolve(v); speechSynthesis.onvoiceschanged=()=>resolve(speechSynthesis.getVoices()); }); }
+async function pickEnglishVoice(){ const voices = await getVoicesOnce(); const prefer=[/en-US.*(Female|Samantha|Google US|Jenny|America|Alloy|Natural)/i,/en-GB/i,/en-/i]; for(const rx of prefer){ const hit=voices.find(v=>rx.test(`${v.name} ${v.lang}`)); if(hit) return hit; } return voices[0]||null; }
+async function ensureAudioReady(){ try{ if(audioCtx && audioCtx.state==='suspended') await audioCtx.resume(); }catch{} try{ speechSynthesis.resume(); }catch{} }
+async function speak(text){ if(!window.speechSynthesis) return; await ensureAudioReady(); if(!selectedVoice) selectedVoice=await pickEnglishVoice(); speaking=true; listening=false; $callStatus.textContent='…'; const u=new SpeechSynthesisUtterance(text||''); u.lang='en-US'; u.voice=selectedVoice||null; u.rate=1; u.pitch=1; u.volume=1; speechSynthesis.cancel(); speechSynthesis.speak(u); $viz.style.borderColor='var(--speak)'; $viz.style.boxShadow='0 12px 40px rgba(30,144,255,.25)'; u.onend=()=>{ speaking=false; startListen(); }; }
 
-async function initMic(){
-  const stream = await navigator.mediaDevices.getUserMedia({ audio:true });
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  analyser = audioCtx.createAnalyser();
-  analyser.fftSize = 512;
-  micSource = audioCtx.createMediaStreamSource(stream);
-  micSource.connect(analyser);
-}
+async function initMic(){ const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}}); audioCtx=new (window.AudioContext||window.webkitAudioContext)(); analyser=audioCtx.createAnalyser(); analyser.fftSize=1024; micSource=audioCtx.createMediaStreamSource(stream); micSource.connect(analyser); }
 
-function startViz(){
-  const data = new Uint8Array(analyser.frequencyBinCount);
-  function tick(){
-    if (listening){
-      analyser.getByteTimeDomainData(data);
-      let sum=0; for (let i=0;i<data.length;i++){ const v=(data[i]-128)/128; sum+=v*v; }
-      const rms = Math.sqrt(sum/data.length);
-      const scale = 1 + Math.min(0.9, rms*3);
-      $viz.style.transform = `scale(${scale.toFixed(2)})`;
-    } else if (speaking){
-      const t = Date.now()/500;
-      const scale = 1 + 0.08*Math.sin(t*2*Math.PI);
-      $viz.style.transform = `scale(${scale.toFixed(2)})`;
-    } else {
-      $viz.style.transform = 'scale(1)';
-    }
-    rafId = requestAnimationFrame(tick);
-  }
-  if (!rafId) rafId = requestAnimationFrame(tick);
+function startViz(){ const data=new Uint8Array(analyser.fftSize); function tick(now){ analyser.getByteTimeDomainData(data); let sum=0; for(let i=0;i<data.length;i++){ const v=(data[i]-128)/128; sum+=v*v; } const rms=Math.sqrt(sum/data.length); if(listening){ $viz.style.borderColor='var(--listen)'; $viz.style.boxShadow='0 12px 40px rgba(16,185,129,.22)'; const scale=1+Math.min(1.0,rms*3.4); $viz.style.transform=`scale(${scale.toFixed(2)})`; } else if(speaking){ const t=now/520; const scale=1+0.07*Math.sin(t*2*Math.PI); $viz.style.transform=`scale(${scale.toFixed(2)})`; } else { $viz.style.transform='scale(1)'; }
+    if(speaking && rms>0.055){ try{ speechSynthesis.cancel(); }catch{} speaking=false; startListen(); }
+    rafId=requestAnimationFrame(tick); }
+  if(rafId) cancelAnimationFrame(rafId); rafId=requestAnimationFrame(tick);
 }
 
 function startListen(){
-  if (!sttAvailable()){ $callStatus.textContent='Microphone not supported in this browser.'; return; }
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  sr = new SR(); sr.lang='en-US'; sr.interimResults=false; sr.maxAlternatives=1; sr.continuous=false;
-  listening=true; $callStatus.textContent="Tell me, how can I help you today?";
-  sr.onresult = e=>{
-    const text = e.results[0][0].transcript;
-    // Voice mode stays private: no transcript added to chat/history.
-    $callStatus.textContent='…'; // thinking
-    askAPI(text).then(j=>{
-      // Voice: speak answer; DO NOT push to messages.
-      speak(j.nl || 'Here is the answer.');
-    }).catch(()=>{ /* ignore */ });
+  if(!sttAvailable()){ $callStatus.textContent='Microphone not supported in this browser.'; return; }
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  try{ sr && sr.abort(); }catch{}
+  sr=new SR(); sr.lang='en-US'; sr.interimResults=true; sr.maxAlternatives=1; sr.continuous=true;
+  listening=true; speaking=false; $callStatus.textContent="Tell me, how can I help you today?";
+  let finalText='';
+  sr.onresult = e => {
+    for(let i=e.resultIndex;i<e.results.length;i++){ const r=e.results[i];
+      if(r.isFinal){ finalText=r[0].transcript.trim(); if(finalText){ try{ sr.abort(); }catch{} listening=false; $callStatus.textContent='…'; askAPI(finalText).then(j=>{ speak(j.nl||'Here is the answer.'); }).catch(()=>{ speak('Sorry, I had trouble understanding that.'); }); }
+    }}
   };
-  sr.onerror = ()=>{ if (!speaking) setTimeout(startListen, 300); };
-  sr.onend   = ()=>{ if (!speaking) setTimeout(startListen, 150); }; // auto-restart loop
-  sr.start();
+  sr.onerror=()=>{ listening=false; setTimeout(startListen, 250); };
+  sr.onend=()=>{ if(!speaking) setTimeout(startListen, 120); };
+  try{ sr.start(); }catch{ setTimeout(startListen, 200); }
 }
 
-async function enterVoiceMode(){
-  // Hide text UI, show voice canvas
-  $stream.style.display='none';
-  $textFooter.style.display='none';
-  $callArea.style.display='flex';
-  // Prep audio + mic visualizer
-  if (!audioCtx){
-    try{ await initMic(); }catch(e){ $callStatus.textContent='Please allow microphone access.'; return; }
-    startViz();
-  }
-  await ensureAudioReady();
-  if (!selectedVoice) selectedVoice = await pickEnglishVoice();
-  // Gentle audio prime so TTS is unlocked
-  speak("Listening.");
+/* Enter/leave modes */
+async function enterCallMode(){
+  $stream.style.display='none'; $voiceNoteArea.style.display='none'; $textFooter.style.display='none'; $callArea.style.display='flex';
+  if(!audioCtx){ try{ await initMic(); }catch{ $callStatus.textContent='Please allow microphone access.'; return; } startViz(); }
+  await ensureAudioReady(); if(!selectedVoice) selectedVoice=await pickEnglishVoice(); speak('Listening.');
 }
-function leaveVoiceMode(){
+function leaveCallMode(){
   try{ sr && sr.abort(); }catch{} try{ speechSynthesis.cancel(); }catch{}
-  listening=false; speaking=false; $callStatus.textContent="Tell me, how can I help you today?";
-  $viz.style.transform='scale(1)';
-  $stream.style.display='block';
-  $textFooter.style.display='block';
+  listening=false; speaking=false; $viz.style.transform='scale(1)'; $viz.style.borderColor='#bfe7ff'; $viz.style.boxShadow='0 12px 40px rgba(14,165,233,.18)';
+  $callStatus.textContent="Tell me, how can I help you today?";
   $callArea.style.display='none';
 }
 
-/* ===== Mode toggle ===== */
+function enterTextMode(){ $stream.style.display='block'; $voiceNoteArea.style.display='none'; $textFooter.style.display='block'; leaveCallMode(); }
+function enterVoiceNoteMode(){ $stream.style.display='none'; $voiceNoteArea.style.display='block'; $textFooter.style.display='none'; leaveCallMode(); }
+
+/* ================== Mode toggle ================== */
 $modeToggle.addEventListener('click', (e)=>{
   const btn=e.target.closest('button'); if(!btn) return;
   [...$modeToggle.querySelectorAll('button')].forEach(b=>b.classList.remove('active'));
   btn.classList.add('active');
   const m=btn.dataset.mode;
-  if (m==='voice') { enterVoiceMode(); }
-  else { leaveVoiceMode(); }
+  if (m==='text') enterTextMode();
+  else if (m==='voicenote') enterVoiceNoteMode();
+  else if (m==='call') enterCallMode();
 });
 
-/* ===== KB modal ===== */
+/* ================== KB modal ================== */
 function openKB(){ $kbModal.style.display='flex'; }
 function closeKB(){ $kbModal.style.display='none'; }
 $gearBtn.addEventListener('click', openKB);
 $kbCancel.addEventListener('click', closeKB);
 $kbSave.addEventListener('click', ()=>{ try{ localStorage.setItem('demo_kb', $kbText.value);}catch{} closeKB(); });
 
-/* ===== Welcome (text mode) ===== */
-messages.push({ role:'assistant', html:`<div>Hi! I’m your AI Employee. Type below — or switch to <b>Voice</b> to talk hands-free. This demo uses simulated numbers tailored by your Company KB.</div>` });
+/* ================== Welcome (text mode) ================== */
+messages.push({ role:'assistant', html:`<div>Welcome! Choose <b>Text</b>, leave a <b>Voice Note</b>, or use <b>Call</b> for a hands-free conversation. This demo uses simulated numbers tailored by your Company KB.</div>` });
 render();
 </script>
 </body>
