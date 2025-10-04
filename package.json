@@ -1,0 +1,12 @@
+{
+  "name": "universal-demo-agent",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "dev": "vercel dev",
+    "start": "node api/demoAgent.js"
+  },
+  "dependencies": {
+    "openai": "^4.56.0"
+  }
+}
