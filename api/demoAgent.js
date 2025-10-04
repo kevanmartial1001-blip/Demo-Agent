@@ -1,185 +1,215 @@
 // /api/demoAgent.js
-// Demo agent that *explains* and can *do actions* (email / WhatsApp / call)
-// It calls your routes: /api/sendMailgun, /api/sendWhatsApp, /api/call
+// Human-like, action-first demo assistant with multi-bubble script & follow-ups.
 
 module.exports.config = { runtime: "nodejs18.x" };
 
-function pick(arr) { return arr[Math.floor(Math.random()*arr.length)]; }
-function trace() { return "demo_" + Math.random().toString(36).slice(2, 10); }
-function mkTable(columns, rows) { return { format: "table", summary: "Simulated data based on your KB.", value: { columns, rows } }; }
+const trace = () => "demo_" + Math.random().toString(36).slice(2, 10);
 
-function detectIntent(utterance = "") {
-  const u = utterance.toLowerCase();
-  const wantsEmail   = /email|mail|correo/.test(u);
-  const wantsWA      = /whatsapp|wa/.test(u);
-  const wantsCall    = /call|phone me|llam(a|e)me|ring/.test(u);
-  const wantsSend    = /send|share|env[ií]a|enviame|enviar/.test(u);
-
-  const wantsReport  = /report|informe|summary|resumen/.test(u);
-  const wantsRevenue = /revenue|sales|ventas|ingresos/.test(u);
-  const wantsInv     = /inventory|stock|existencias/.test(u);
-  const wantsHR      = /vacation|pto|holiday|vacaciones/.test(u);
-
-  if ((wantsSend && (wantsEmail || wantsWA)) || wantsEmail || wantsWA) {
-    return { intent: wantsWA ? "send_whatsapp" : "send_email", topic:
-      (wantsInv && "inventory") || (wantsHR && "hr") || (wantsRevenue && "revenue") || (wantsReport && "report") || "generic" };
-  }
-  if (wantsCall) return { intent: "place_call", topic: "generic" };
-
-  if (wantsInv) return { intent: "inventory_lookup", topic: "inventory" };
-  if (wantsHR)  return { intent: "hr_schedule", topic: "hr" };
-  if (wantsRevenue || wantsReport) return { intent: "sales_report", topic: "revenue" };
-
-  return { intent: "generic_question", topic: "generic" };
-}
-
-function buildAnswer(topic, kb) {
-  switch (topic) {
+// --- Demo data builders -------------------------------------------------------
+const mkTable = (columns, rows) => ({ format:"table", summary:"Demo numbers (connect for live data).", value:{ columns, rows }});
+function buildAnswer(topic, kb){
+  switch(topic){
     case "inventory":
-      return mkTable(
-        ["SKU", "Product", "On Hand", "Reserved", "Available"],
-        [
-          ["UH-001", kb?.example_top_product || "Ultra Hoodie", 820, 120, 700],
-          ["BT-099", "Basic Tee", 1450, 260, 1190],
-          ["CP-223", "Classic Polo", 680, 90, 590]
-        ]
-      );
+      return mkTable(["SKU","Product","On Hand","Reserved","Available"],[
+        ["UH-001", kb?.example_top_product || "Ultra Hoodie", 820,120,700],
+        ["BT-099","Basic Tee",1450,260,1190],
+        ["CP-223","Classic Polo",680,90,590]
+      ]);
     case "hr":
-      return mkTable(
-        ["Employee", "From", "To", "Type"],
-        [
-          [kb?.example_employee_1 || "C. Alvarez", "2025-07-08", "2025-07-16", "Vacation"],
-          [kb?.example_employee_2 || "M. Duarte", "2025-07-11", "2025-07-12", "PTO"],
-          [kb?.example_employee_3 || "S. Ruiz",    "2025-07-22", "2025-07-29", "Vacation"]
-        ]
-      );
+      return mkTable(["Employee","From","To","Type"],[
+        [kb?.example_employee_1||"C. Alvarez","2025-07-08","2025-07-16","Vacation"],
+        [kb?.example_employee_2||"M. Duarte","2025-07-11","2025-07-12","PTO"],
+        [kb?.example_employee_3||"S. Ruiz",   "2025-07-22","2025-07-29","Vacation"]
+      ]);
     case "revenue":
     case "report":
-      return mkTable(
-        ["Week", "Region", "Channel", "Revenue (€)"],
-        [
-          ["W-2", kb?.example_top_region || "Andalucía", "Online",  58210],
-          ["W-2", kb?.primary_region     || "Marbella",  "Retail",  39400],
-          ["W-1", kb?.example_top_region || "Andalucía", "Online",  54730]
-        ]
-      );
+      return mkTable(["Week","Region","Channel","Revenue (€)"],[
+        ["W-2", kb?.example_top_region||"Andalucía","Online",58210],
+        ["W-2", kb?.primary_region    ||"Marbella", "Retail",39400],
+        ["W-1", kb?.example_top_region||"Andalucía","Online",54730]
+      ]);
     default:
-      return { format: "text", value: `Here’s how this would work once connected to your systems.` };
+      return { format:"text", value:"Once connected, I’d pull this live and complete the task automatically." };
   }
 }
 
-function howItWorked(intent) {
-  const steps = [
-    "Planner identified your intent.",
-    "Would select the right workflow/tool.",
-    "Would call the necessary systems & APIs.",
-    "Would validate results and summarize."
-  ];
-  if (intent === "send_email") steps.splice(2, 0, "Would format content into an email and send it.");
-  if (intent === "send_whatsapp") steps.splice(2, 0, "Would compose a WhatsApp message and send it.");
-  if (intent === "place_call") steps.splice(2, 0, "Would initiate an outbound phone call via your provider.");
-  return steps;
-}
-
-function whyItMatters(topic) {
-  const base = ["Time saved", "Reduced errors", "Faster decisions"];
-  if (topic === "revenue") base.unshift("Everyone sees the same numbers");
-  if (topic === "inventory") base.unshift("Live stock visibility");
-  if (topic === "hr") base.unshift("Team visibility and planning");
-  return base;
-}
-
-function htmlReportFromAnswer(answer) {
-  if (answer?.format === "table") {
-    const cols = answer.value.columns;
-    const rows = answer.value.rows;
-    const rowsHtml = rows.map(r => `<tr>${r.map(v => `<td>${String(v)}</td>`).join("")}</tr>`).join("");
-    return `
-      <h2>Your AI Employee — Requested Report</h2>
-      <p>Here is the report you asked for.</p>
-      <table border="1" cellpadding="6" cellspacing="0">
-        <thead><tr>${cols.map(c=>`<th align="left">${c}</th>`).join("")}</tr></thead>
-        <tbody>${rowsHtml}</tbody>
-      </table>
-      <p style="margin-top:12px;color:#666">Demo data — connect your systems for live numbers.</p>
-    `;
+function textFromAnswer(a){
+  if (a?.format === "table") {
+    const { columns, rows } = a.value;
+    return rows.map(r=>r.map((v,i)=>`${columns[i]}: ${v}`).join(" | ")).join("\n");
   }
-  return `<p>${answer?.value || "Here is the information you requested."}</p>`;
+  return a?.value || "";
 }
 
-async function postJSON(baseUrl, path, payload) {
-  const r = await fetch(`${baseUrl}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
+// --- Intent detection ---------------------------------------------------------
+function detect(utterance=""){
+  const u = utterance.toLowerCase();
+  const wantsEmail   = /email|mail|correo/.test(u);
+  const wantsWA      = /whatsapp|wa\b/.test(u);
+  const wantsCall    = /\bcall|ring|phone me|ll[aá]m/.test(u);
+  const wantsSend    = /\bsend|share|env[ií]a|enviar/.test(u);
+
+  const wantsReport  = /\breport|informe|summary|resumen/.test(u);
+  const wantsRevenue = /\brevenue|sales|ventas|ingresos/.test(u);
+  const wantsInv     = /\binventory|stock|existencias/.test(u);
+  const wantsHR      = /\bvacation|pto|holiday|vacaciones/.test(u);
+  const wantsInvoice = /\binvoice|bill|factura/.test(u);
+
+  // hard actions:
+  if ((wantsSend && (wantsEmail||wantsWA)) || wantsEmail || wantsWA)
+    return { intent: wantsWA ? "send_whatsapp" : "send_email", topic:
+      (wantsInv&&"inventory")||(wantsHR&&"hr")||(wantsRevenue&&"revenue")||(wantsReport&&"report")||"generic" };
+
+  if (wantsCall)     return { intent:"place_call", topic:"generic" };
+  if (wantsInvoice)  return { intent:"create_invoice", topic:"billing" };
+
+  // info lookups:
+  if (wantsInv)      return { intent:"inventory_lookup", topic:"inventory" };
+  if (wantsHR)       return { intent:"hr_schedule", topic:"hr" };
+  if (wantsRevenue||wantsReport) return { intent:"sales_report", topic:"revenue" };
+
+  return { intent:"generic_question", topic:"generic" };
+}
+
+// --- Utility ------------------------------------------------------------------
+async function postJSON(baseUrl, path, payload){
+  const r = await fetch(`${baseUrl}${path}`,{
+    method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify(payload)
   });
   const j = await r.json().catch(()=>({ ok:false, error:"Bad JSON" }));
   if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
   return j;
 }
 
+// --- Main handler -------------------------------------------------------------
 module.exports = async (req, res) => {
   if (req.method !== "POST") return res.status(405).json({ ok:false, error:"Method Not Allowed" });
 
-  try {
-    const body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body || {});
-    const { utterance = "", kb = {}, demo = true, history = [], client = {} } = body;
+  try{
+    const body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body||{});
+    const { utterance="", kb={}, client={}, mode="text", response_to } = body;
 
-    const clientPhone = client.phone || kb?.demo_client?.phone || "";
-    const clientEmail = client.email || kb?.demo_client?.email || "";
+    // client contact resolution (footer → KB demo_client fallback)
+    const phone = (client.phone || kb?.demo_client?.phone || "").trim();
+    const email = (client.email || kb?.demo_client?.email || "").trim();
 
-    const { intent, topic } = detectIntent(utterance);
+    const { intent, topic } = detect(utterance);
     const answer = buildAnswer(topic, kb);
-
-    let nl = "";
-    if (intent === "send_email") {
-      nl = `Got it. I’ll email the ${topic === "generic" ? "information" : `${topic} report`} right away to ${clientEmail || "[no email on file]"}.`;
-    } else if (intent === "send_whatsapp") {
-      nl = `Sure. I’ll send a WhatsApp message with the ${topic === "generic" ? "details" : `${topic} report`} to ${clientPhone || "[no phone on file]"}.`;
-    } else if (intent === "place_call") {
-      nl = `Okay. I’ll place a quick follow-up call to ${clientPhone || "[no phone on file]"}.`;
-    } else {
-      nl = `Here’s a ${topic} view using demo data.`;
-    }
 
     const proto = req.headers["x-forwarded-proto"] || "https";
     const baseUrl = `${proto}://${req.headers.host}`;
 
-    let performed = null;
-    try {
-      if (intent === "send_email") {
-        if (!clientEmail) throw new Error("Missing recipient email");
-        const subject = `Your ${topic} report`;
-        const html = htmlReportFromAnswer(answer);
-        await postJSON(baseUrl, "/api/sendMailgun", { to: clientEmail, subject, html });
-        performed = { type:"email", to: clientEmail };
-      } else if (intent === "send_whatsapp") {
-        if (!clientPhone) throw new Error("Missing recipient phone");
-        const txt = `Here is your ${topic} report:\n\n` +
-          (answer.format === "table"
-            ? answer.value.rows.map(r => r.join(" | ")).join("\n")
-            : (answer.value || "See details in your portal."));
-        await postJSON(baseUrl, "/api/sendWhatsApp", { to: clientPhone, body: txt });
-        performed = { type:"whatsapp", to: clientPhone };
-      } else if (intent === "place_call") {
-        if (!clientPhone) throw new Error("Missing recipient phone");
-        const message = `This is your AI Employee with your ${topic} update. I just sent details to your inbox.`;
-        await postJSON(baseUrl, "/api/call", { to: clientPhone, message });
-        performed = { type:"call", to: clientPhone };
-      }
-    } catch (actErr) {
-      nl += ` (Action note: ${actErr.message})`;
+    // A "script" is a list of short bubbles we play in order (with delays client-side).
+    const script = [];
+    const cards  = []; // optional card to show the data (not in call mode)
+    const follow = null; // place-holder
+
+    // Helper to narrate like a human operator
+    const say = (text, delay=0) => script.push({ text, delay_ms: delay });
+
+    // --- Flows ----------------------------------------------------------------
+
+    if (intent === "inventory_lookup") {
+      say("Sure — opening Inventory → Stock Check…", 0);
+      say("Give me a second to pull live counts…", 600);
+      say(`Found it.`, 700);
+      cards.push(answer);
+
+    } else if (intent === "sales_report") {
+      say("On it — fetching Sales → Weekly Revenue…", 0);
+      say("Compiling the last two weeks…", 700);
+      say("Ready.", 600);
+      cards.push(answer);
+
+    } else if (intent === "hr_schedule") {
+      say("Opening HR → Time Off…", 0);
+      say("Checking upcoming vacations…", 600);
+      cards.push(answer);
+
+    } else if (intent === "create_invoice") {
+      // 2-step follow-up: ask where to deliver it
+      const ctx = trace(); // context id for this question
+      say("Absolutely — I’ll prepare the invoice for Mr. Martin.", 0);
+      say("I’ll grab recent work items and fill the template.", 700);
+      say("Where should I send it?", 600);
+      return res.status(200).json({
+        mode,
+        script,
+        ask: {
+          context_id: ctx,
+          question: "Send the invoice via…",
+          options: [
+            { id:"whatsapp", label:"WhatsApp" },
+            { id:"email",    label:"Email" }
+          ],
+          requires: { whatsapp: !!phone, email: !!email }
+        },
+        meta: { intent, topic, trace_id: ctx }
+      });
     }
 
-    return res.status(200).json({
-      nl,
-      answer,
-      explain: { steps: howItWorked(intent) },
-      impact: { bullets: whyItMatters(topic) },
-      meta: { intent, template_id: topic + "_demo", trace_id: trace(), performed }
-    });
+    // Deliver actions (explicit “send me by …”)
+    let performed = null;
+    try{
+      if (intent === "send_email") {
+        if (!email) throw new Error("No email on file");
+        say("Sure — packaging the report and sending email…", 0);
+        await postJSON(baseUrl, "/api/sendMailgun", {
+          to: email, subject: `Your ${topic} report`, html: htmlFrom(answer, "email")
+        });
+        say(`Done — sent to ${email}.`, 900);
+        performed = { ok:true, type:"email", to:email };
+
+      } else if (intent === "send_whatsapp") {
+        if (!phone) throw new Error("No phone on file");
+        say("Got it — composing WhatsApp message…", 0);
+        await postJSON(baseUrl, "/api/sendWhatsApp", {
+          to: phone, body: `Your ${topic} report:\n\n${textFromAnswer(answer)}`
+        });
+        say(`Sent on WhatsApp to ${phone}.`, 900);
+        performed = { ok:true, type:"whatsapp", to:phone };
+
+      } else if (intent === "place_call") {
+        if (!phone) throw new Error("No phone on file");
+        say("Okay — placing a quick follow-up call…", 0);
+        await postJSON(baseUrl, "/api/call", {
+          to: phone, message: `This is your AI Employee with your ${topic} update. I also sent details to your inbox.`
+        });
+        say(`Calling ${phone} now.`, 900);
+        performed = { ok:true, type:"call", to:phone };
+      }
+    } catch (e) {
+      say(`Action failed: ${String(e.message||e)}.`, 0);
+      performed = { ok:false, error:String(e.message||e) };
+    }
+
+    // Compose response
+    const response = {
+      mode,
+      // In call mode, we speak only the script (no cards). In text/vn, show cards.
+      script: script.length ? script : [{ text:"Here’s what I found.", delay_ms:0 }],
+      cards:  (mode==="call") ? [] : (cards.length ? cards : [answer]),
+      meta: { intent, topic, trace_id: trace(), performed }
+    };
+
+    return res.status(200).json(response);
 
   } catch (e) {
-    return res.status(500).json({ ok:false, error:String(e?.message || e) });
+    return res.status(500).json({ ok:false, error:String(e?.message||e) });
   }
 };
+
+// --- helpers for email HTML
+function htmlFrom(answer, title="Report"){
+  if (answer?.format === "table") {
+    const { columns, rows } = answer.value;
+    const rowsHtml = rows.map(r=>`<tr>${r.map(v=>`<td>${String(v)}</td>`).join("")}</tr>`).join("");
+    return `<h2>Your AI Employee — ${title}</h2>
+      <table border="1" cellpadding="6" cellspacing="0">
+        <thead><tr>${columns.map(c=>`<th align="left">${c}</th>`).join("")}</tr></thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+      <p style="color:#666">Demo data — connect for live numbers.</p>`;
+  }
+  return `<p>${answer?.value || ""}</p>`;
+}
