@@ -43,13 +43,13 @@
   .row{display:flex;gap:10px;align-items:center}
   .box{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:8px 10px}
   input,button,textarea{font:inherit}
-  input[type="text"]{flex:1;border:none;outline:none;background:transparent;padding:8px 6px}
+  input[type="text"], textarea{flex:1;border:none;outline:none;background:transparent;padding:8px 6px}
+  textarea{min-height:38px;resize:vertical}
   button{border:none;background:var(--accent);color:#fff;padding:10px 14px;border-radius:12px;font-weight:600;cursor:pointer}
   button.ghost{background:#eef2f7;color:#0b0c10}
   button:disabled{opacity:.6;cursor:not-allowed}
-  .pill{border:1px solid var(--line);border-radius:999px;padding:6px 10px;background:#fff;color:#647085;font-weight:600}
 
-  /* Voice-Note stream (separate from Text) */
+  /* Voice-Note stream */
   .audio-note{display:flex;align-items:center;gap:10px}
   .audio-note small{color:#647085}
 
@@ -62,6 +62,14 @@
   }
   .status{margin-top:16px;color:#647085;font-weight:700}
   .prompt{font-size:13px;color:#9aa6b2;margin-top:4px}
+
+  /* Modal (KB) */
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.35);display:none;align-items:center;justify-content:center;z-index:50}
+  .sheet{width:min(720px,92%);background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px}
+  .sheet h2{margin:0 0 8px 0;font-size:16px}
+  .field{display:flex;flex-direction:column;gap:6px;margin:8px 0}
+  .field textarea{width:100%;height:220px;border:1px solid var(--line);border-radius:10px;padding:10px;font-family:ui-monospace,Menlo,monospace}
+  .sheet .row{justify-content:flex-end}
 </style>
 </head>
 <body>
@@ -81,7 +89,7 @@
     <!-- TEXT STREAM -->
     <div id="stream" class="stream"></div>
 
-    <!-- VOICE NOTE STREAM (answers render here; separate from Text) -->
+    <!-- VOICE NOTE STREAM -->
     <div id="vnStream" class="stream" style="display:none"></div>
 
     <!-- CALL CANVAS -->
@@ -89,43 +97,56 @@
       <div id="viz" class="viz"></div>
       <div id="callStatus" class="status">Tell me, how can I help you today?</div>
       <div class="prompt">Hands-free: just speak. I’ll answer out loud, then listen again.</div>
-      <!-- remote audio for OpenAI Realtime (Pro path) -->
       <audio id="remoteAudio" autoplay playsinline></audio>
     </div>
   </main>
 
-  <!-- FOOTERS (switch per mode) -->
+  <!-- FOOTERS -->
   <footer>
-    <!-- TEXT COMPOSER -->
+    <!-- TEXT COMPOSER + ACTIONS -->
     <div id="textFooter" class="composer">
       <div class="row box">
         <input id="prompt" type="text" placeholder="Ask anything for your business…" />
         <button id="send">Send</button>
       </div>
-    </div>
 
-    <!-- VOICE NOTE CONTROLS (bottom) -->
-    <div id="vnFooter" class="composer" style="display:none">
-      <div class="row box" style="justify-content:center">
-        <button id="vnRecord" class="ghost">● Record</button>
-        <button id="vnStop" class="ghost" disabled>Stop</button>
-        <button id="vnSend" disabled>Send</button>
-        <span id="vnStatus" class="pill">Idle</span>
-        <audio id="vnPlayer" controls style="display:none"></audio>
+      <!-- Quick Actions (WhatsApp / Call / Email via Mailgun) -->
+      <div class="row" style="margin-top:8px; gap:8px; align-items:flex-start; flex-wrap:wrap">
+        <div class="box" style="flex:1; min-width:220px">
+          <input id="clientPhone" type="tel" placeholder="Client phone (e.g. +34 600 000 000)" />
+        </div>
+        <button id="btnWhatsApp" class="ghost">Send WhatsApp</button>
+        <button id="btnCall" class="ghost">Call Now</button>
+
+        <div class="box" style="flex:1; min-width:260px">
+          <input id="clientEmail" type="email" placeholder="client@company.com" />
+        </div>
+        <button id="btnEmail" class="ghost">Send Email</button>
+
+        <div class="box" style="flex:1 0 100%; margin-top:8px">
+          <textarea id="outboundBody" placeholder="Message to send (defaults to the latest AI reply)…"></textarea>
+        </div>
       </div>
     </div>
 
+    <!-- VOICE NOTE (only Record / Send) -->
+    <div id="vnFooter" class="composer" style="display:none">
+      <div class="row box" style="justify-content:center">
+        <button id="vnToggle" class="ghost">● Record</button>
+        <button id="vnSend" disabled>Send</button>
+      </div>
+    </div>
     <!-- CALL has no footer controls -->
   </footer>
 </div>
 
 <!-- KB Modal -->
-<div id="kbModal" class="modal" style="display:none">
+<div id="kbModal" class="modal">
   <div class="sheet">
     <h2>Company KB</h2>
     <div class="field">
       <label style="font-size:13px;color:#647085">JSON</label>
-      <textarea id="kbText" style="width:100%;height:220px;font-family:ui-monospace,Menlo,monospace">{
+      <textarea id="kbText">{
   "company_id": "acme-123",
   "company_name": "ACME Retail Group",
   "sector": "Retail",
@@ -134,10 +155,15 @@
   "example_top_region": "Andalucía",
   "example_employee_1": "C. Alvarez",
   "example_employee_2": "M. Duarte",
-  "example_employee_3": "S. Ruiz"
+  "example_employee_3": "S. Ruiz",
+  "demo_client": {
+    "name": "Jane Buyer",
+    "phone": "+34600000000",
+    "email": "jane.buyer@example.com"
+  }
 }</textarea>
     </div>
-    <div class="row" style="justify-content:flex-end;gap:8px">
+    <div class="row">
       <button id="kbCancel" class="button ghost">Cancel</button>
       <button id="kbSave">Save</button>
     </div>
@@ -145,9 +171,9 @@
 </div>
 
 <script>
-/* ================== Elements & state ================== */
-let messages = [];              // Text-mode messages
-let vnMessages = [];            // Voice-note messages (separate stream)
+/* ====== Elements & state ====== */
+let messages = [];       // Text mode history
+let vnMessages = [];     // Voice Note history (separate)
 
 const $modeToggle = document.getElementById('modeToggle');
 const $stream = document.getElementById('stream');
@@ -164,6 +190,16 @@ const $remoteAudio = document.getElementById('remoteAudio');
 const $prompt = document.getElementById('prompt');
 const $send = document.getElementById('send');
 
+const $btnWA = document.getElementById('btnWhatsApp');
+const $btnCall = document.getElementById('btnCall');
+const $btnEmail = document.getElementById('btnEmail');
+const $clientPhone = document.getElementById('clientPhone');
+const $clientEmail = document.getElementById('clientEmail');
+const $outboundBody = document.getElementById('outboundBody');
+
+const $vnToggle = document.getElementById('vnToggle');
+const $vnSend = document.getElementById('vnSend');
+
 const $gearBtn = document.getElementById('gearBtn');
 const $kbModal = document.getElementById('kbModal');
 const $kbText = document.getElementById('kbText');
@@ -172,7 +208,14 @@ const $kbCancel = document.getElementById('kbCancel');
 
 try { const saved = localStorage.getItem('demo_kb'); if (saved) $kbText.value = saved; } catch {}
 
-/* ================== Shared helpers ================== */
+/* Prefill client fields from KB if present */
+try {
+  const kb = JSON.parse($kbText.value||'{}');
+  if (kb.demo_client?.phone) $clientPhone.value = kb.demo_client.phone;
+  if (kb.demo_client?.email) $clientEmail.value = kb.demo_client.email;
+} catch {}
+
+/* ====== Helpers ====== */
 function esc(s){ return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 function tableHTML(t){ if(!t||!t.columns||!t.rows) return ''; let h='<table><thead><tr>'; for(const c of t.columns) h+=`<th>${esc(String(c))}</th>`; h+='</tr></thead><tbody>'; for(const r of t.rows) h+='<tr>'+r.map(v=>`<td>${esc(String(v))}</td>`).join('')+'</tr>'; h+='</tbody></table>'; return h; }
 function assistantHTML(j){
@@ -186,7 +229,7 @@ function assistantHTML(j){
   return `${nl}<div class="cards">${answer}${explain}${impact}</div>${meta}`;
 }
 function historyForAPI(){
-  const h=[]; // Only text-mode history is sent (voice modes are demo-only)
+  const h=[]; // only text-mode history informs the demo agent
   for(const m of messages){
     if(m.role==='user') h.push({role:'user',text:m.html.replace(/<[^>]+>/g,'')});
     if(m.role==='assistant'&&m.raw?.meta) h.push({role:'assistant',intent:m.raw.meta.intent,entities:m.raw.entities||{}});
@@ -200,7 +243,7 @@ async function askAPI(text){
   return r.json();
 }
 
-/* ================== Text-mode rendering ================== */
+/* ====== Renderers ====== */
 function renderText(){
   $stream.innerHTML = messages.map(m=>{
     const role = m.role==='user'?'user':'assistant';
@@ -211,7 +254,6 @@ function renderText(){
 function pushUser(text){ messages.push({role:'user', html:esc(text)}); renderText(); }
 function pushAssistant(j){ messages.push({role:'assistant', html:assistantHTML(j), raw:{meta:j.meta}}); renderText(); }
 
-/* ================== Voice-Note rendering (separate) ================== */
 function renderVN(){
   $vnStream.innerHTML = vnMessages.map(m=>{
     const role = m.role==='user'?'user':'assistant';
@@ -229,7 +271,7 @@ function vnPushAudio(blobUrl, durationSec){
 }
 function vnPushAssistant(j){ vnMessages.push({ role:'assistant', html:assistantHTML(j) }); renderVN(); }
 
-/* ================== Text mode events ================== */
+/* ====== Text mode events ====== */
 function sendText(){
   const t = $prompt.value.trim(); if(!t) return;
   pushUser(t); $prompt.value='';
@@ -238,89 +280,109 @@ function sendText(){
 $send.addEventListener('click', sendText);
 $prompt.addEventListener('keydown', e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendText(); }});
 
-/* ================== Voice Note mode (bottom controls) ================== */
-const $vnRecord = document.getElementById('vnRecord');
-const $vnStop = document.getElementById('vnStop');
-const $vnSend = document.getElementById('vnSend');
-const $vnStatus = document.getElementById('vnStatus');
-const $vnPlayer = document.getElementById('vnPlayer');
+/* ====== Outbound actions (use last assistant reply as default) ====== */
+function latestAssistantText(){
+  const last = [...messages].reverse().find(m => m.role==='assistant');
+  if (!last) return 'Hello from Your AI Employee.';
+  const div = document.createElement('div'); div.innerHTML = last.html;
+  const answer = div.querySelector('.card') || div;
+  return (answer.textContent || '').trim().slice(0, 1600);
+}
+function bodyToSend(){
+  const t = ($outboundBody.value||'').trim();
+  return t ? t : latestAssistantText();
+}
 
-let vnMediaRec=null, vnChunks=[], vnBlob=null, vnMime=null, vnDurationSec=0, vnStartAt=0;
+$btnWA.addEventListener('click', async ()=>{
+  const to = ($clientPhone.value||'').trim();
+  if (!to) return alert('Enter a WhatsApp phone, e.g. +34...');
+  const body = bodyToSend();
+  const r = await fetch('/api/sendWhatsApp',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to, body })});
+  const j = await r.json(); if(!j.ok) return alert('WhatsApp error: ' + j.error);
+  alert('WhatsApp sent ✔️');
+});
+$btnCall.addEventListener('click', async ()=>{
+  const to = ($clientPhone.value||'').trim();
+  if (!to) return alert('Enter a phone number, e.g. +34...');
+  const message = bodyToSend();
+  const r = await fetch('/api/call',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to, message })});
+  const j = await r.json(); if(!j.ok) return alert('Call error: ' + j.error);
+  alert('Calling now ✔️');
+});
+$btnEmail.addEventListener('click', async ()=>{
+  const to = ($clientEmail.value||'').trim();
+  if (!to) return alert('Enter an email');
+  const subject = 'Your AI Employee — Follow-up';
+  const html = `<p>Hi,</p><p>${esc(bodyToSend())}</p><p>— Your AI Employee</p>`;
+  const r = await fetch('/api/sendMailgun',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to, subject, html })});
+  const j = await r.json(); if(!j.ok) return alert('Email error: ' + j.error);
+  alert('Email sent ✔️');
+});
 
-$vnRecord?.addEventListener('click', async ()=>{
+/* ====== Voice Note (Record / Send) ====== */
+let vnMediaRec=null, vnChunks=[], vnBlob=null, vnMime=null, vnDurationSec=0, vnStartAt=0, vnStreamLive=null;
+$vnToggle.addEventListener('click', async ()=>{
+  if (vnMediaRec && vnMediaRec.state === 'recording') {
+    try { vnMediaRec.stop(); } catch {}
+    $vnToggle.textContent = '● Record';
+    $vnSend.disabled = !vnBlob;
+    return;
+  }
   try{
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation:true, noiseSuppression:true, autoGainControl:true } });
+    vnStreamLive = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation:true, noiseSuppression:true, autoGainControl:true } });
     vnMime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
-    vnMediaRec = new MediaRecorder(stream,{ mimeType: vnMime });
-    vnChunks = []; vnStartAt = Date.now();
+    vnMediaRec = new MediaRecorder(vnStreamLive,{ mimeType: vnMime });
+    vnChunks = []; vnStartAt = Date.now(); vnBlob = null; vnDurationSec = 0;
     vnMediaRec.ondataavailable = e=>{ if (e.data?.size) vnChunks.push(e.data); };
-    vnMediaRec.onstart = ()=>{ $vnStatus.textContent='Recording…'; $vnRecord.disabled=true; $vnStop.disabled=false; $vnSend.disabled=true; $vnPlayer.style.display='none'; };
+    vnMediaRec.onstart = ()=>{ $vnToggle.textContent='■ Stop'; $vnSend.disabled=true; };
     vnMediaRec.onstop = ()=>{
       vnDurationSec = (Date.now()-vnStartAt)/1000;
       vnBlob = new Blob(vnChunks,{type: vnMime});
-      const url = URL.createObjectURL(vnBlob);
-      $vnPlayer.src = url; $vnPlayer.style.display='inline-block';
-      $vnStatus.textContent='Ready to send'; $vnSend.disabled=false; $vnRecord.disabled=false; $vnStop.disabled=true;
+      try { vnStreamLive.getTracks().forEach(t=>t.stop()); } catch {}
+      $vnSend.disabled=false; $vnToggle.textContent='● Record';
     };
     vnMediaRec.start();
-  }catch(e){ $vnStatus.textContent='Mic permission needed'; }
+  }catch(e){ alert('Mic permission needed'); }
 });
-$vnStop?.addEventListener('click', ()=>{ try{ vnMediaRec?.stop(); }catch{} });
-
-$vnSend?.addEventListener('click', async ()=>{
+$vnSend.addEventListener('click', async ()=>{
   if(!vnBlob) return;
-  const url = $vnPlayer.src;
-  // 1) Show the audio note in VN thread (no transcript)
+  const url = URL.createObjectURL(vnBlob);
   vnPushAudio(url, vnDurationSec);
+  $vnSend.disabled = true;
 
-  // 2) Transcribe silently to drive the AI (provider = Deepgram or Whisper)
-  $vnSend.disabled=true; $vnStatus.textContent='Transcribing…';
   const base64 = await blobToBase64(vnBlob);
   const res = await fetch('/api/transcribe', {
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
+    method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({ audio: base64, mime: vnMime })
   });
   const j = await res.json();
-  if (!j.ok){ $vnStatus.textContent='Transcription failed'; $vnSend.disabled=false; return; }
+  if (!j.ok){ vnPushAssistant({ nl:'Transcription failed.', answer:{format:'text',value:''}, explain:{steps:[]}, impact:{bullets:[]}, meta:{} }); $vnSend.disabled=false; return; }
   const text = j.text || '';
-  // 3) Get the AI answer and render it in VN stream (text cards)
-  askAPI(text).then(r => { vnPushAssistant(r); $vnStatus.textContent='Idle'; $vnSend.disabled=false; })
-              .catch(() => { vnPushAssistant({ nl:'Sorry, there was an error.', answer:{format:'text',value:''}, explain:{steps:[]}, impact:{bullets:[]}, meta:{} }); $vnStatus.textContent='Idle'; $vnSend.disabled=false; });
+  askAPI(text)
+    .then(r => { vnPushAssistant(r); $vnSend.disabled=false; })
+    .catch(() => { vnPushAssistant({ nl:'Sorry, there was an error.', answer:{format:'text',value:''}, explain:{steps:[]}, impact:{bullets:[]}, meta:{} }); $vnSend.disabled=false; });
 });
 function blobToBase64(blob){ return new Promise((resolve)=>{ const r=new FileReader(); r.onload=()=>resolve(r.result); r.readAsDataURL(blob); }); }
 
-/* ================== Call mode (Pro: OpenAI Realtime WebRTC; Fallback: browser SR/TTS) ================== */
-let useRealtime = false;   // flipped on if server says realtime is configured
-let pc=null, micStream=null; // realtime
-let audioCtx=null, analyser=null, rafId=null;
-let sr=null, speaking=false, listening=false; // fallback SR/TTS
+/* ====== Call mode (OpenAI Realtime → fallback SR/TTS) ====== */
+let pc=null, micStream=null, useRealtime=false;
+let audioCtx=null, analyser=null, rafId=null, sr=null, speaking=false, listening=false;
 
-// --- Realtime (WebRTC) ---
 async function startRealtimeCall(){
-  // ask backend whether realtime is configured + get ephemeral session
   const resp = await fetch('/api/realtimeSession');
   if (!resp.ok) throw new Error('No realtime session available');
-  const { websocket_url, client_secret } = await resp.json(); // `client_secret.value` is the ephemeral token (server returns short form below)
+  const { websocket_url, client_secret } = await resp.json();
   useRealtime = true;
 
-  // capture mic
   micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation:true, noiseSuppression:true, autoGainControl:true } });
-
   pc = new RTCPeerConnection();
-  // local mic to PC
   micStream.getTracks().forEach(t => pc.addTrack(t, micStream));
-
-  // remote audio
   pc.ontrack = (e)=>{ $remoteAudio.srcObject = e.streams[0]; };
-
-  // data channel is optional (not used here)
   pc.createDataChannel("oai-events");
 
   const offer = await pc.createOffer({ offerToReceiveAudio: true });
   await pc.setLocalDescription(offer);
 
-  // send offer to OpenAI Realtime
   const sdpResp = await fetch(websocket_url || "https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview", {
     method: "POST",
     headers: { Authorization: `Bearer ${client_secret}`, "Content-Type": "application/sdp" },
@@ -329,17 +391,16 @@ async function startRealtimeCall(){
   const answer = { type:"answer", sdp: await sdpResp.text() };
   await pc.setRemoteDescription(answer);
 
-  // green visual to indicate active
   $viz.style.borderColor = 'var(--listen)';
   $viz.style.boxShadow = '0 12px 40px rgba(16,185,129,.22)';
   $callStatus.textContent = "You're connected — just talk.";
 }
 
-// --- Fallback SR/TTS (kept from earlier, trimmed) ---
+/* Fallback SR/TTS */
 function sttAvailable(){ return !!(window.SpeechRecognition || window.webkitSpeechRecognition); }
 function startVizFallback(){
   if (audioCtx) return;
-  const init = async ()=>{
+  (async ()=>{
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation:true, noiseSuppression:true, autoGainControl:true }});
     audioCtx = new (window.AudioContext||window.webkitAudioContext)();
     analyser = audioCtx.createAnalyser(); analyser.fftSize = 1024;
@@ -354,8 +415,7 @@ function startVizFallback(){
       rafId=requestAnimationFrame(tick);
     }
     rafId=requestAnimationFrame(tick);
-  };
-  init();
+  })();
 }
 let selectedVoice=null;
 function getVoicesOnce(){ return new Promise(r=>{ const v=speechSynthesis.getVoices(); if(v&&v.length) return r(v); speechSynthesis.onvoiceschanged=()=>r(speechSynthesis.getVoices()); }); }
@@ -374,7 +434,7 @@ function startListenFallback(){
   try{ sr.start(); }catch{ setTimeout(startListenFallback,200); }
 }
 
-/* ================== Mode switching ================== */
+/* ====== Mode switching ====== */
 function enterTextMode(){
   $stream.style.display='block'; $vnStream.style.display='none';
   $textFooter.style.display='block'; $vnFooter.style.display='none';
@@ -389,28 +449,18 @@ async function enterCallMode(){
   $stream.style.display='none'; $vnStream.style.display='none';
   $textFooter.style.display='none'; $vnFooter.style.display='none';
   $callArea.style.display='flex';
-
-  // Try PRO (OpenAI Realtime). If it fails, fallback.
-  try{
-    await startRealtimeCall();
-  }catch{
-    // Fallback to browser SR/TTS
-    startVizFallback();
-    speakFallback('Listening.');
-  }
+  try { await startRealtimeCall(); }
+  catch { startVizFallback(); speakFallback('Listening.'); }
 }
 function leaveCallMode(){
-  // Realtime cleanup
   try{ pc && pc.close(); }catch{} pc=null;
   try{ micStream && micStream.getTracks().forEach(t=>t.stop()); }catch{} micStream=null;
-  // Fallback cleanup
   try{ sr && sr.abort(); }catch{} try{ speechSynthesis.cancel(); }catch{}
   listening=false; speaking=false;
   $viz.style.transform='scale(1)'; $viz.style.borderColor='#bfe7ff'; $viz.style.boxShadow='0 12px 40px rgba(14,165,233,.18)';
   $callStatus.textContent="Tell me, how can I help you today?";
   $callArea.style.display='none';
 }
-
 $modeToggle.addEventListener('click', (e)=>{
   const btn=e.target.closest('button'); if(!btn) return;
   [...$modeToggle.querySelectorAll('button')].forEach(b=>b.classList.remove('active'));
@@ -421,15 +471,24 @@ $modeToggle.addEventListener('click', (e)=>{
   else if (m==='call') enterCallMode();
 });
 
-/* ================== KB modal ================== */
+/* ====== KB modal ====== */
 function openKB(){ $kbModal.style.display='flex'; }
 function closeKB(){ $kbModal.style.display='none'; }
 $gearBtn.addEventListener('click', openKB);
 $kbCancel.addEventListener('click', closeKB);
-$kbSave.addEventListener('click', ()=>{ try{ localStorage.setItem('demo_kb', $kbText.value);}catch{} closeKB(); });
+$kbSave.addEventListener('click', ()=>{
+  try{ localStorage.setItem('demo_kb', $kbText.value);}catch{}
+  // re-fill client fields if present
+  try{
+    const kb = JSON.parse($kbText.value||'{}');
+    if (kb.demo_client?.phone) $clientPhone.value = kb.demo_client.phone;
+    if (kb.demo_client?.email) $clientEmail.value = kb.demo_client.email;
+  }catch{}
+  closeKB();
+});
 
-/* ================== Welcome (text mode) ================== */
-messages.push({ role:'assistant', html:`<div>Welcome! Choose <b>Text</b>, leave a <b>Voice Note</b> (audio bubble + text reply), or try <b>Call</b> for a breathtaking hands-free conversation. This demo uses simulated numbers tailored by your Company KB.</div>` });
+/* ====== Welcome ====== */
+messages.push({ role:'assistant', html:`<div>Welcome! Choose <b>Text</b>, leave a <b>Voice Note</b> (audio bubble + text reply), or try <b>Call</b> for a hands-free conversation. Use the actions below to send WhatsApp, place a call, or email the client — exactly like production, but with demo data.</div>` });
 renderText();
 </script>
 </body>
