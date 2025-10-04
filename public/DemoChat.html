@@ -39,7 +39,7 @@
   .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
   .box{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:8px 10px;flex:1}
   input,button,textarea{font:inherit}
-  input[type="text"], input[type="tel"], input[type="email"], textarea{flex:1;border:none;outline:none;background:transparent;padding:8px 6px}
+  input[type="text"], textarea{flex:1;border:none;outline:none;background:transparent;padding:8px 6px}
   textarea{min-height:38px;resize:vertical}
   button{border:none;background:var(--accent);color:#fff;padding:10px 14px;border-radius:12px;font-weight:600;cursor:pointer}
   button.ghost{background:#eef2f7;color:#0b0c10}
@@ -61,10 +61,14 @@
 
   /* Modal */
   .modal{position:fixed;inset:0;background:rgba(0,0,0,.35);display:none;align-items:center;justify-content:center;z-index:50}
-  .sheet{width:min(720px,92%);background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px}
+  .sheet{width:min(860px,92%);background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px}
   .sheet h2{margin:0 0 8px 0;font-size:16px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .panel{border:1px solid var(--line);border-radius:12px;padding:12px;background:#fafbff}
+  .panel h3{margin:0 0 8px 0;font-size:14px}
   .field{display:flex;flex-direction:column;gap:6px;margin:8px 0}
-  .field textarea{width:100%;height:220px;border:1px solid var(--line);border-radius:10px;padding:10px;font-family:ui-monospace,Menlo,monospace}
+  .field input,.field textarea{border:1px solid var(--line);border-radius:10px;padding:10px}
+  .small{font-size:12px;color:#647085}
   .sheet .row{justify-content:flex-end}
 </style>
 </head>
@@ -78,7 +82,7 @@
       <button data-mode="call">Call</button>
     </div>
     <div class="spacer"></div>
-    <button id="gearBtn" class="icon-btn" title="Company KB">⚙️</button>
+    <button id="gearBtn" class="icon-btn" title="Settings & KB">⚙️</button>
   </header>
 
   <main>
@@ -97,52 +101,59 @@
     </div>
   </main>
 
-  <!-- FOOTERS -->
+  <!-- FOOTER -->
   <footer>
-    <!-- TEXT COMPOSER + ACTIONS -->
     <div id="textFooter" class="composer">
       <div class="row box">
-        <input id="prompt" type="text" placeholder="Ask anything for your business…" />
+        <input id="prompt" type="text" placeholder="Hey! I'm your AI assistant. Ask me anything about your business and I will get it done for you." />
         <button id="send">Send</button>
-      </div>
-
-      <!-- Actions: WhatsApp / Call / Email -->
-      <div class="row" style="margin-top:8px; gap:8px; align-items:flex-start">
-        <div class="box" style="min-width:220px">
-          <input id="clientPhone" type="tel" placeholder="Client phone (e.g. +34 600 000 000)" />
-        </div>
-        <button id="btnWhatsApp" class="ghost">Send WhatsApp</button>
-        <button id="btnCall" class="ghost">Call Now</button>
-
-        <div class="box" style="min-width:260px">
-          <input id="clientEmail" type="email" placeholder="client@company.com" />
-        </div>
-        <button id="btnEmail" class="ghost">Send Email</button>
-
-        <div class="box" style="flex:1 0 100%; margin-top:8px">
-          <textarea id="outboundBody" placeholder="Message to send (defaults to the latest AI reply)…"></textarea>
-        </div>
       </div>
     </div>
 
-    <!-- VOICE NOTE (Record / Send) -->
     <div id="vnFooter" class="composer" style="display:none">
       <div class="row box" style="justify-content:center">
         <button id="vnToggle" class="ghost">● Record</button>
         <button id="vnSend" disabled>Send</button>
       </div>
     </div>
-    <!-- CALL has no footer controls -->
   </footer>
 </div>
 
-<!-- KB Modal -->
+<!-- SETTINGS & KB MODAL -->
 <div id="kbModal" class="modal">
   <div class="sheet">
-    <h2>Company KB</h2>
-    <div class="field">
-      <label style="font-size:13px;color:#647085">JSON</label>
-      <textarea id="kbText">{
+    <h2>Settings</h2>
+    <div class="grid">
+      <!-- Contact & Tests -->
+      <div class="panel">
+        <h3>Contact for Demo Actions</h3>
+        <div class="field">
+          <label>Phone (E.164) <span class="small">Used for WhatsApp & Calls</span></label>
+          <input id="setPhone" type="tel" placeholder="+34 600 000 000" />
+        </div>
+        <div class="field">
+          <label>Email <span class="small">Used for Email actions</span></label>
+          <input id="setEmail" type="email" placeholder="client@company.com" />
+        </div>
+        <div class="field">
+          <label>Test message (optional)</label>
+          <textarea id="testMsg" placeholder="Message for test actions"></textarea>
+        </div>
+        <div class="row" style="gap:8px">
+          <button id="testWA" class="ghost">Test WhatsApp</button>
+          <button id="testCall" class="ghost">Test Call</button>
+          <button id="testEmail" class="ghost">Test Email</button>
+          <div class="spacer"></div>
+          <button id="kbSave" title="Save settings">Save</button>
+          <button id="kbCancel" class="ghost">Close</button>
+        </div>
+      </div>
+
+      <!-- Company KB -->
+      <div class="panel">
+        <h3>Company KB (JSON)</h3>
+        <div class="field">
+          <textarea id="kbText" style="height:340px">{
   "company_id": "acme-123",
   "company_name": "ACME Retail Group",
   "sector": "Retail",
@@ -154,10 +165,9 @@
   "example_employee_3": "S. Ruiz",
   "demo_client": { "name": "Jane Buyer", "phone": "+34600000000", "email": "jane.buyer@example.com" }
 }</textarea>
-    </div>
-    <div class="row">
-      <button id="kbCancel" class="button ghost">Cancel</button>
-      <button id="kbSave">Save</button>
+        </div>
+        <div class="small">The KB personalizes demo answers. In production, this will point to your real data sources.</div>
+      </div>
     </div>
   </div>
 </div>
@@ -182,27 +192,26 @@ const $remoteAudio = document.getElementById('remoteAudio');
 const $prompt = document.getElementById('prompt');
 const $send = document.getElementById('send');
 
-const $btnWA = document.getElementById('btnWhatsApp');
-const $btnCall = document.getElementById('btnCall');
-const $btnEmail = document.getElementById('btnEmail');
-const $clientPhone = document.getElementById('clientPhone');
-const $clientEmail = document.getElementById('clientEmail');
-const $outboundBody = document.getElementById('outboundBody');
-
-const $vnToggle = document.getElementById('vnToggle');
-const $vnSend = document.getElementById('vnSend');
-
 const $gearBtn = document.getElementById('gearBtn');
 const $kbModal = document.getElementById('kbModal');
 const $kbText = document.getElementById('kbText');
 const $kbSave = document.getElementById('kbSave');
 const $kbCancel = document.getElementById('kbCancel');
 
+const $setPhone = document.getElementById('setPhone');
+const $setEmail = document.getElementById('setEmail');
+const $testMsg  = document.getElementById('testMsg');
+const $testWA   = document.getElementById('testWA');
+const $testCall = document.getElementById('testCall');
+const $testEmail= document.getElementById('testEmail');
+
 try { const saved = localStorage.getItem('demo_kb'); if (saved) $kbText.value = saved; } catch {}
+try { const savedPhone = localStorage.getItem('demo_contact_phone'); if (savedPhone) $setPhone.value = savedPhone; } catch {}
+try { const savedEmail = localStorage.getItem('demo_contact_email'); if (savedEmail) $setEmail.value = savedEmail; } catch {}
 try {
   const kb = JSON.parse($kbText.value||'{}');
-  if (kb.demo_client?.phone) $clientPhone.value = kb.demo_client.phone;
-  if (kb.demo_client?.email) $clientEmail.value = kb.demo_client.email;
+  if (!$setPhone.value && kb.demo_client?.phone) $setPhone.value = kb.demo_client.phone;
+  if (!$setEmail.value && kb.demo_client?.email) $setEmail.value = kb.demo_client.email;
 } catch {}
 
 /* ====== Helpers ====== */
@@ -213,15 +222,12 @@ function tableHTML(t){ if(!t||!t.columns||!t.rows) return ''; let h='<table><the
 async function playScriptIntoText(resp){
   const { script = [], cards = [], meta = {} } = resp;
 
-  // 1) play short bubbles with delays (human cadence)
   for (const step of script) {
     messages.push({ role:'assistant', html: esc(step.text), raw:{ meta } });
     renderText();
     const d = Math.min(Number(step.delay_ms||0), 2000);
     if (d > 0) await new Promise(r=>setTimeout(r,d));
   }
-
-  // 2) append cards if present
   if (cards && cards.length){
     const htmlCards = cards.map(c => {
       if (c.format === 'table') {
@@ -233,8 +239,6 @@ async function playScriptIntoText(resp){
     messages.push({ role:'assistant', html: htmlCards, raw:{ meta } });
     renderText();
   }
-
-  // 3) follow-up UI (if any)
   if (resp.ask) renderAsk(resp.ask);
 }
 
@@ -271,7 +275,7 @@ function renderAsk(askObj){
     btn.addEventListener('click', async ()=>{
       const choice = btn.getAttribute('data-o');
       let kb={}; try{ kb=JSON.parse($kbText.value);}catch{}
-      const client = { phone: ($clientPhone?.value||'').trim(), email: ($clientEmail?.value||'').trim() };
+      const client = { phone: getPhone(), email: getEmail() };
 
       const r = await fetch('/api/demoAgent',{
         method:'POST', headers:{'Content-Type':'application/json'},
@@ -293,20 +297,19 @@ function historyForAPI(){
   return h.slice(-12);
 }
 
-// >>> IMPORTANT: askAPI sends mode + client contact info
+function getPhone(){
+  return ($setPhone.value || "").trim() ||
+    (JSON.parse($kbText.value||'{}').demo_client?.phone || "").trim();
+}
+function getEmail(){
+  return ($setEmail.value || "").trim() ||
+    (JSON.parse($kbText.value||'{}').demo_client?.email || "").trim();
+}
+
+// askAPI sends mode + client contact info (from Settings/KB)
 async function askAPI(text){
   let kb={}; try{ kb=JSON.parse($kbText.value);}catch{}
-
-  const fallbackPhone = (kb?.demo_client?.phone || "").trim();
-  const fallbackEmail = (kb?.demo_client?.email || "").trim();
-  const phoneField = ($clientPhone?.value || "").trim();
-  const emailField = ($clientEmail?.value || "").trim();
-
-  const client = {
-    phone: phoneField || fallbackPhone,
-    email: emailField || fallbackEmail
-  };
-
+  const client = { phone: getPhone(), email: getEmail() };
   const mode =
     $callArea.style.display === 'flex' ? 'call' :
     ($vnStream.style.display !== 'none' ? 'voicenote' : 'text');
@@ -343,44 +346,6 @@ function sendText(){
 $send.addEventListener('click', sendText);
 $prompt.addEventListener('keydown', e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendText(); }});
 
-/* ====== Outbound actions (manual buttons) ====== */
-function latestAssistantText(){
-  const last = [...messages].reverse().find(m => m.role==='assistant');
-  if (!last) return 'Hello from Your AI Employee.';
-  const div = document.createElement('div'); div.innerHTML = last.html;
-  const answer = div.querySelector('.card') || div;
-  return (answer.textContent || '').trim().slice(0, 1600);
-}
-function bodyToSend(){
-  const t = ($outboundBody.value||'').trim();
-  return t ? t : latestAssistantText();
-}
-$btnWA.addEventListener('click', async ()=>{
-  const to = ($clientPhone.value||'').trim();
-  if (!to) return alert('Enter a WhatsApp phone, e.g. +34...');
-  const body = bodyToSend();
-  const r = await fetch('/api/sendWhatsApp',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to, body })});
-  const j = await r.json(); if(!j.ok) return alert('WhatsApp error: ' + j.error);
-  alert('WhatsApp sent ✓');
-});
-$btnCall.addEventListener('click', async ()=>{
-  const to = ($clientPhone.value||'').trim();
-  if (!to) return alert('Enter a phone number, e.g. +34...');
-  const message = bodyToSend();
-  const r = await fetch('/api/call',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to, message })});
-  const j = await r.json(); if(!j.ok) return alert('Call error: ' + j.error);
-  alert('Calling now ✓');
-});
-$btnEmail.addEventListener('click', async ()=>{
-  const to = ($clientEmail.value||'').trim();
-  if (!to) return alert('Enter an email');
-  const subject = 'Your AI Employee — Follow-up';
-  const html = `<p>Hi,</p><p>${esc(bodyToSend())}</p><p>— Your AI Employee</p>`;
-  const r = await fetch('/api/sendMailgun',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to, subject, html })});
-  const j = await r.json(); if(!j.ok) return alert('Email error: ' + j.error);
-  alert('Email sent ✓');
-});
-
 /* ====== Voice Note (Record / Send) ====== */
 let vnMediaRec=null, vnChunks=[], vnBlob=null, vnMime=null, vnDurationSec=0, vnStartAt=0, vnStreamLive=null;
 function renderVN(){
@@ -399,7 +364,6 @@ function vnPushAudio(blobUrl, durationSec){
   vnMessages.push({ role:'user', html }); renderVN();
 }
 function vnPushAssistant(resp){
-  // reuse text renderer for script/cards into VN stream
   (async ()=>{
     const { script = [], cards = [], meta = {} } = resp;
     for (const step of script) {
@@ -463,32 +427,45 @@ $vnSend.addEventListener('click', async ()=>{
 });
 function blobToBase64(blob){ return new Promise((resolve)=>{ const r=new FileReader(); r.onload=()=>resolve(r.result); r.readAsDataURL(blob); }); }
 
-/* ====== Call mode (Realtime → fallback SR/TTS) ====== */
+/* ====== Call mode (fallback SR/TTS + noise gate viz) ====== */
 let pc=null, micStream=null;
-let audioCtx=null, analyser=null, rafId=null, sr=null, speaking=false, listening=false;
+let audioCtx=null, analyser=null, rafId=null, sr=null, speaking=false, listening=false, gateThresh=0.02;
 
-async function startRealtimeCall(){
-  // If you have a working OpenAI Realtime token route, you can swap this in.
-  // We keep the fallback UX which already feels like a phone call.
-  throw new Error('Use fallback');
-}
-
-/* Fallback SR/TTS */
 function sttAvailable(){ return !!(window.SpeechRecognition || window.webkitSpeechRecognition); }
 function startVizFallback(){
   if (audioCtx) return;
   (async ()=>{
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation:true, noiseSuppression:true, autoGainControl:true }});
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation:true, noiseSuppression:true, autoGainControl:true, channelCount:1 }
+    });
     audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+    const src = audioCtx.createMediaStreamSource(stream);
+
+    // simple HPF + analyser = cheap denoise for visualization/gating
+    const hpf = audioCtx.createBiquadFilter(); hpf.type='highpass'; hpf.frequency.value = 120;
     analyser = audioCtx.createAnalyser(); analyser.fftSize = 1024;
-    const src = audioCtx.createMediaStreamSource(stream); src.connect(analyser);
-    const data = new Uint8Array(analyser.fftSize);
+    src.connect(hpf).connect(analyser);
+
+    const data = new Float32Array(analyser.fftSize);
     function tick(now){
-      analyser.getByteTimeDomainData(data);
-      let sum=0; for(let i=0;i<data.length;i++){ const v=(data[i]-128)/128; sum+=v*v; }
-      const rms=Math.sqrt(sum/data.length);
-      if(listening){ $viz.style.borderColor='var(--listen)'; $viz.style.boxShadow='0 12px 40px rgba(16,185,129,.22)'; const scale=1+Math.min(1.0,rms*3.4); $viz.style.transform=`scale(${scale.toFixed(2)})`; }
-      else if(speaking){ const t=now/520; const scale=1+0.07*Math.sin(t*2*Math.PI); $viz.style.transform=`scale(${scale.toFixed(2)})`; $viz.style.borderColor='var(--speak)'; $viz.style.boxShadow='0 12px 40px rgba(30,144,255,.25)'; }
+      analyser.getFloatTimeDomainData(data);
+      let sum=0; for(let i=0;i<data.length;i++){ const v=data[i]; sum+=v*v; }
+      const rms=Math.sqrt(sum/data.length);             // ~signal energy
+      const gated = rms > gateThresh;                   // noise gate
+      if(listening && gated){
+        $viz.style.borderColor='var(--listen)';
+        $viz.style.boxShadow='0 12px 40px rgba(16,185,129,.22)';
+        const scale=1+Math.min(1.0,rms*3.8); $viz.style.transform=`scale(${scale.toFixed(2)})`;
+      }else if(speaking){
+        const t=now/520; const scale=1+0.07*Math.sin(t*2*Math.PI);
+        $viz.style.transform=`scale(${scale.toFixed(2)})`;
+        $viz.style.borderColor='var(--speak)';
+        $viz.style.boxShadow='0 12px 40px rgba(30,144,255,.25)';
+      }else{
+        $viz.style.transform='scale(1)';
+        $viz.style.borderColor='#bfe7ff';
+        $viz.style.boxShadow='0 12px 40px rgba(14,165,233,.18)';
+      }
       rafId=requestAnimationFrame(tick);
     }
     rafId=requestAnimationFrame(tick);
@@ -526,12 +503,10 @@ async function enterCallMode(){
   $stream.style.display='none'; $vnStream.style.display='none';
   $textFooter.style.display='none'; $vnFooter.style.display='none';
   $callArea.style.display='flex';
-  try { await startRealtimeCall(); }
-  catch { startVizFallback(); speakFallback('Listening.'); }
+  startVizFallback();
+  speakFallback('Listening.');
 }
 function leaveCallMode(){
-  try{ pc && pc.close(); }catch{} pc=null;
-  try{ micStream && micStream.getTracks().forEach(t=>t.stop()); }catch{} micStream=null;
   try{ sr && sr.abort(); }catch{} try{ speechSynthesis.cancel(); }catch{}
   listening=false; speaking=false;
   $viz.style.transform='scale(1)'; $viz.style.borderColor='#bfe7ff'; $viz.style.boxShadow='0 12px 40px rgba(14,165,233,.18)';
@@ -548,23 +523,41 @@ $modeToggle.addEventListener('click', (e)=>{
   else if (m==='call') enterCallMode();
 });
 
-/* ====== KB modal ====== */
+/* ====== Settings modal ====== */
 function openKB(){ $kbModal.style.display='flex'; }
 function closeKB(){ $kbModal.style.display='none'; }
 $gearBtn.addEventListener('click', openKB);
 $kbCancel.addEventListener('click', closeKB);
 $kbSave.addEventListener('click', ()=>{
   try{ localStorage.setItem('demo_kb', $kbText.value);}catch{}
-  try{
-    const kb = JSON.parse($kbText.value||'{}');
-    if (kb.demo_client?.phone) $clientPhone.value = kb.demo_client.phone;
-    if (kb.demo_client?.email) $clientEmail.value = kb.demo_client.email;
-  }catch{}
+  try{ localStorage.setItem('demo_contact_phone', ($setPhone.value||'').trim()); }catch{}
+  try{ localStorage.setItem('demo_contact_email', ($setEmail.value||'').trim()); }catch{}
   closeKB();
 });
 
+/* Settings: test actions */
+$testWA.addEventListener('click', async ()=>{
+  const to = getPhone(); if(!to) return alert('Enter a phone first.');
+  const body = ($testMsg.value||'Hello from Your AI Employee (test).').trim();
+  const r = await fetch('/api/sendWhatsApp',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to, body })});
+  const j = await r.json(); alert(j.ok ? 'WhatsApp sent ✓' : ('WhatsApp error: ' + j.error));
+});
+$testCall.addEventListener('click', async ()=>{
+  const to = getPhone(); if(!to) return alert('Enter a phone first.');
+  const message = ($testMsg.value||'This is a test call from Your AI Employee.').trim();
+  const r = await fetch('/api/call',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to, message })});
+  const j = await r.json(); alert(j.ok ? 'Calling now ✓' : ('Call error: ' + j.error));
+});
+$testEmail.addEventListener('click', async ()=>{
+  const to = getEmail(); if(!to) return alert('Enter an email first.');
+  const subject = 'Your AI Employee — Test Email';
+  const html = `<p>${esc(($testMsg.value||'Hello from Your AI Employee (test).').trim())}</p>`;
+  const r = await fetch('/api/sendMailgun',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to, subject, html })});
+  const j = await r.json(); alert(j.ok ? 'Email sent ✓' : ('Email error: ' + j.error));
+});
+
 /* ====== Welcome ====== */
-messages.push({ role:'assistant', html:`<div>Welcome! Choose <b>Text</b>, leave a <b>Voice Note</b>, or try <b>Call</b> for a hands-free conversation. Use the actions below to send WhatsApp, place a call, or email the client — exactly like production, with demo data.</div>` });
+messages.push({ role:'assistant', html:`<div>Hey! I'm your AI assistant.<br/>Ask me anything about your business and I will get it done for you.</div>` });
 renderText();
 </script>
 </body>
