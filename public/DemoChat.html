@@ -49,8 +49,9 @@
   button:disabled{opacity:.6;cursor:not-allowed}
   .pill{border:1px solid var(--line);border-radius:999px;padding:6px 10px;background:#fff;color:#647085;font-weight:600}
 
-  /* Voice Note stream (separate section) */
-  #vnStream .role{font-size:12px;color:#647085;margin-bottom:6px}
+  /* Voice-Note stream (separate from Text) */
+  .audio-note{display:flex;align-items:center;gap:10px}
+  .audio-note small{color:#647085}
 
   /* Call canvas */
   .callWrap{display:none;flex-direction:column;align-items:center;justify-content:center;min-height:62vh;padding:8px 0}
@@ -61,14 +62,6 @@
   }
   .status{margin-top:16px;color:#647085;font-weight:700}
   .prompt{font-size:13px;color:#9aa6b2;margin-top:4px}
-
-  /* KB modal */
-  .modal{position:fixed;inset:0;background:rgba(0,0,0,.35);display:none;align-items:center;justify-content:center;z-index:50}
-  .sheet{width:min(720px,92%);background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px}
-  .sheet h2{margin:0 0 8px 0;font-size:16px}
-  .field{display:flex;flex-direction:column;gap:6px;margin:8px 0}
-  .field textarea{width:100%;height:220px;border:1px solid var(--line);border-radius:10px;padding:10px;font-family:ui-monospace,Menlo,monospace}
-  .sheet .row{justify-content:flex-end}
 </style>
 </head>
 <body>
@@ -96,6 +89,8 @@
       <div id="viz" class="viz"></div>
       <div id="callStatus" class="status">Tell me, how can I help you today?</div>
       <div class="prompt">Hands-free: just speak. I’ll answer out loud, then listen again.</div>
+      <!-- remote audio for OpenAI Realtime (Pro path) -->
+      <audio id="remoteAudio" autoplay playsinline></audio>
     </div>
   </main>
 
@@ -125,12 +120,12 @@
 </div>
 
 <!-- KB Modal -->
-<div id="kbModal" class="modal">
+<div id="kbModal" class="modal" style="display:none">
   <div class="sheet">
     <h2>Company KB</h2>
     <div class="field">
       <label style="font-size:13px;color:#647085">JSON</label>
-      <textarea id="kbText">{
+      <textarea id="kbText" style="width:100%;height:220px;font-family:ui-monospace,Menlo,monospace">{
   "company_id": "acme-123",
   "company_name": "ACME Retail Group",
   "sector": "Retail",
@@ -142,7 +137,7 @@
   "example_employee_3": "S. Ruiz"
 }</textarea>
     </div>
-    <div class="row">
+    <div class="row" style="justify-content:flex-end;gap:8px">
       <button id="kbCancel" class="button ghost">Cancel</button>
       <button id="kbSave">Save</button>
     </div>
@@ -164,6 +159,7 @@ const $vnFooter = document.getElementById('vnFooter');
 const $callArea = document.getElementById('callArea');
 const $viz = document.getElementById('viz');
 const $callStatus = document.getElementById('callStatus');
+const $remoteAudio = document.getElementById('remoteAudio');
 
 const $prompt = document.getElementById('prompt');
 const $send = document.getElementById('send');
@@ -219,12 +215,19 @@ function pushAssistant(j){ messages.push({role:'assistant', html:assistantHTML(j
 function renderVN(){
   $vnStream.innerHTML = vnMessages.map(m=>{
     const role = m.role==='user'?'user':'assistant';
-    return `<div class="msg ${role}"><div class="bubble">${role==='user'?'<div class="role">You (voice note)</div>':'<div class="role">Your AI Employee</div>'}${m.html}</div></div>`;
+    return `<div class="msg ${role}"><div class="bubble">${
+      role==='user'
+        ? '<div class="role">You (voice note)</div>' + m.html
+        : '<div class="role">Your AI Employee</div>' + m.html
+    }</div></div>`;
   }).join('');
   $vnStream.scrollTop = $vnStream.scrollHeight;
 }
-function vnPushUser(text){ vnMessages.push({role:'user', html:esc(text)}); renderVN(); }
-function vnPushAssistant(j){ vnMessages.push({role:'assistant', html:assistantHTML(j)}); renderVN(); }
+function vnPushAudio(blobUrl, durationSec){
+  const html = `<div class="audio-note"><audio controls src="${blobUrl}"></audio><small>${Math.round(durationSec)}s</small></div>`;
+  vnMessages.push({ role:'user', html }); renderVN();
+}
+function vnPushAssistant(j){ vnMessages.push({ role:'assistant', html:assistantHTML(j) }); renderVN(); }
 
 /* ================== Text mode events ================== */
 function sendText(){
@@ -232,32 +235,32 @@ function sendText(){
   pushUser(t); $prompt.value='';
   askAPI(t).then(pushAssistant).catch(e=>pushAssistant({ nl:`Error: ${esc(String(e.message||e))}`, answer:{format:'text',value:''}, explain:{steps:[]}, impact:{bullets:[]}, meta:{} }));
 }
-document.getElementById('send').addEventListener('click', sendText);
+$send.addEventListener('click', sendText);
 $prompt.addEventListener('keydown', e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendText(); }});
 
-/* ================== Voice Note mode (controls in footer) ================== */
+/* ================== Voice Note mode (bottom controls) ================== */
 const $vnRecord = document.getElementById('vnRecord');
 const $vnStop = document.getElementById('vnStop');
 const $vnSend = document.getElementById('vnSend');
 const $vnStatus = document.getElementById('vnStatus');
 const $vnPlayer = document.getElementById('vnPlayer');
 
-let vnMediaRec=null, vnChunks=[], vnBlob=null, vnMime=null;
+let vnMediaRec=null, vnChunks=[], vnBlob=null, vnMime=null, vnDurationSec=0, vnStartAt=0;
 
 $vnRecord?.addEventListener('click', async ()=>{
   try{
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation:true, noiseSuppression:true, autoGainControl:true } });
     vnMime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
     vnMediaRec = new MediaRecorder(stream,{ mimeType: vnMime });
-    vnChunks = [];
+    vnChunks = []; vnStartAt = Date.now();
     vnMediaRec.ondataavailable = e=>{ if (e.data?.size) vnChunks.push(e.data); };
     vnMediaRec.onstart = ()=>{ $vnStatus.textContent='Recording…'; $vnRecord.disabled=true; $vnStop.disabled=false; $vnSend.disabled=true; $vnPlayer.style.display='none'; };
     vnMediaRec.onstop = ()=>{
+      vnDurationSec = (Date.now()-vnStartAt)/1000;
       vnBlob = new Blob(vnChunks,{type: vnMime});
-      $vnPlayer.src = URL.createObjectURL(vnBlob);
-      $vnPlayer.style.display='inline-block';
-      $vnStatus.textContent='Ready to send';
-      $vnSend.disabled=false; $vnRecord.disabled=false; $vnStop.disabled=true;
+      const url = URL.createObjectURL(vnBlob);
+      $vnPlayer.src = url; $vnPlayer.style.display='inline-block';
+      $vnStatus.textContent='Ready to send'; $vnSend.disabled=false; $vnRecord.disabled=false; $vnStop.disabled=true;
     };
     vnMediaRec.start();
   }catch(e){ $vnStatus.textContent='Mic permission needed'; }
@@ -266,6 +269,11 @@ $vnStop?.addEventListener('click', ()=>{ try{ vnMediaRec?.stop(); }catch{} });
 
 $vnSend?.addEventListener('click', async ()=>{
   if(!vnBlob) return;
+  const url = $vnPlayer.src;
+  // 1) Show the audio note in VN thread (no transcript)
+  vnPushAudio(url, vnDurationSec);
+
+  // 2) Transcribe silently to drive the AI (provider = Deepgram or Whisper)
   $vnSend.disabled=true; $vnStatus.textContent='Transcribing…';
   const base64 = await blobToBase64(vnBlob);
   const res = await fetch('/api/transcribe', {
@@ -276,78 +284,131 @@ $vnSend?.addEventListener('click', async ()=>{
   const j = await res.json();
   if (!j.ok){ $vnStatus.textContent='Transcription failed'; $vnSend.disabled=false; return; }
   const text = j.text || '';
-  vnPushUser('(voice note) ' + text);
+  // 3) Get the AI answer and render it in VN stream (text cards)
   askAPI(text).then(r => { vnPushAssistant(r); $vnStatus.textContent='Idle'; $vnSend.disabled=false; })
               .catch(() => { vnPushAssistant({ nl:'Sorry, there was an error.', answer:{format:'text',value:''}, explain:{steps:[]}, impact:{bullets:[]}, meta:{} }); $vnStatus.textContent='Idle'; $vnSend.disabled=false; });
 });
 function blobToBase64(blob){ return new Promise((resolve)=>{ const r=new FileReader(); r.onload=()=>resolve(r.result); r.readAsDataURL(blob); }); }
 
-/* ================== Call mode (unchanged hands-free) ================== */
-let audioCtx=null, analyser=null, micSource=null, rafId=null;
-let sr=null, listening=false, speaking=false;
-let selectedVoice = null;
+/* ================== Call mode (Pro: OpenAI Realtime WebRTC; Fallback: browser SR/TTS) ================== */
+let useRealtime = false;   // flipped on if server says realtime is configured
+let pc=null, micStream=null; // realtime
+let audioCtx=null, analyser=null, rafId=null;
+let sr=null, speaking=false, listening=false; // fallback SR/TTS
 
-function sttAvailable(){ return !!(window.SpeechRecognition || window.webkitSpeechRecognition); }
-function getVoicesOnce(){ return new Promise((resolve)=>{ const v=speechSynthesis.getVoices(); if(v&&v.length) return resolve(v); speechSynthesis.onvoiceschanged=()=>resolve(speechSynthesis.getVoices()); }); }
-async function pickEnglishVoice(){ const voices = await getVoicesOnce(); const prefer=[/en-US.*(Female|Samantha|Google US|Jenny|America|Alloy|Natural)/i,/en-GB/i,/en-/i]; for(const rx of prefer){ const hit=voices.find(v=>rx.test(`${v.name} ${v.lang}`)); if(hit) return hit; } return voices[0]||null; }
-async function ensureAudioReady(){ try{ if(audioCtx && audioCtx.state==='suspended') await audioCtx.resume(); }catch{} try{ speechSynthesis.resume(); }catch{} }
-async function speak(text){ if(!window.speechSynthesis) return; await ensureAudioReady(); if(!selectedVoice) selectedVoice=await pickEnglishVoice(); speaking=true; listening=false; $callStatus.textContent='…'; const u=new SpeechSynthesisUtterance(text||''); u.lang='en-US'; u.voice=selectedVoice||null; u.rate=1; u.pitch=1; u.volume=1; speechSynthesis.cancel(); speechSynthesis.speak(u); $viz.style.borderColor='var(--speak)'; $viz.style.boxShadow='0 12px 40px rgba(30,144,255,.25)'; u.onend=()=>{ speaking=false; startListen(); }; }
+// --- Realtime (WebRTC) ---
+async function startRealtimeCall(){
+  // ask backend whether realtime is configured + get ephemeral session
+  const resp = await fetch('/api/realtimeSession');
+  if (!resp.ok) throw new Error('No realtime session available');
+  const { websocket_url, client_secret } = await resp.json(); // `client_secret.value` is the ephemeral token (server returns short form below)
+  useRealtime = true;
 
-async function initMic(){ const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}}); audioCtx=new (window.AudioContext||window.webkitAudioContext)(); analyser=audioCtx.createAnalyser(); analyser.fftSize=1024; micSource=audioCtx.createMediaStreamSource(stream); micSource.connect(analyser); }
+  // capture mic
+  micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation:true, noiseSuppression:true, autoGainControl:true } });
 
-function startViz(){ const data=new Uint8Array(analyser.fftSize); function tick(now){ analyser.getByteTimeDomainData(data); let sum=0; for(let i=0;i<data.length;i++){ const v=(data[i]-128)/128; sum+=v*v; } const rms=Math.sqrt(sum/data.length); if(listening){ $viz.style.borderColor='var(--listen)'; $viz.style.boxShadow='0 12px 40px rgba(16,185,129,.22)'; const scale=1+Math.min(1.0,rms*3.4); $viz.style.transform=`scale(${scale.toFixed(2)})`; } else if(speaking){ const t=now/520; const scale=1+0.07*Math.sin(t*2*Math.PI); $viz.style.transform=`scale(${scale.toFixed(2)})`; } else { $viz.style.transform='scale(1)'; }
-    if(speaking && rms>0.055){ try{ speechSynthesis.cancel(); }catch{} speaking=false; startListen(); }
-    rafId=requestAnimationFrame(tick); }
-  if(rafId) cancelAnimationFrame(rafId); rafId=requestAnimationFrame(tick);
+  pc = new RTCPeerConnection();
+  // local mic to PC
+  micStream.getTracks().forEach(t => pc.addTrack(t, micStream));
+
+  // remote audio
+  pc.ontrack = (e)=>{ $remoteAudio.srcObject = e.streams[0]; };
+
+  // data channel is optional (not used here)
+  pc.createDataChannel("oai-events");
+
+  const offer = await pc.createOffer({ offerToReceiveAudio: true });
+  await pc.setLocalDescription(offer);
+
+  // send offer to OpenAI Realtime
+  const sdpResp = await fetch(websocket_url || "https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${client_secret}`, "Content-Type": "application/sdp" },
+    body: offer.sdp
+  });
+  const answer = { type:"answer", sdp: await sdpResp.text() };
+  await pc.setRemoteDescription(answer);
+
+  // green visual to indicate active
+  $viz.style.borderColor = 'var(--listen)';
+  $viz.style.boxShadow = '0 12px 40px rgba(16,185,129,.22)';
+  $callStatus.textContent = "You're connected — just talk.";
 }
 
-function startListen(){
-  if(!sttAvailable()){ $callStatus.textContent='Microphone not supported in this browser.'; return; }
+// --- Fallback SR/TTS (kept from earlier, trimmed) ---
+function sttAvailable(){ return !!(window.SpeechRecognition || window.webkitSpeechRecognition); }
+function startVizFallback(){
+  if (audioCtx) return;
+  const init = async ()=>{
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation:true, noiseSuppression:true, autoGainControl:true }});
+    audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+    analyser = audioCtx.createAnalyser(); analyser.fftSize = 1024;
+    const src = audioCtx.createMediaStreamSource(stream); src.connect(analyser);
+    const data = new Uint8Array(analyser.fftSize);
+    function tick(now){
+      analyser.getByteTimeDomainData(data);
+      let sum=0; for(let i=0;i<data.length;i++){ const v=(data[i]-128)/128; sum+=v*v; }
+      const rms=Math.sqrt(sum/data.length);
+      if(listening){ $viz.style.borderColor='var(--listen)'; $viz.style.boxShadow='0 12px 40px rgba(16,185,129,.22)'; const scale=1+Math.min(1.0,rms*3.4); $viz.style.transform=`scale(${scale.toFixed(2)})`; }
+      else if(speaking){ const t=now/520; const scale=1+0.07*Math.sin(t*2*Math.PI); $viz.style.transform=`scale(${scale.toFixed(2)})`; $viz.style.borderColor='var(--speak)'; $viz.style.boxShadow='0 12px 40px rgba(30,144,255,.25)'; }
+      rafId=requestAnimationFrame(tick);
+    }
+    rafId=requestAnimationFrame(tick);
+  };
+  init();
+}
+let selectedVoice=null;
+function getVoicesOnce(){ return new Promise(r=>{ const v=speechSynthesis.getVoices(); if(v&&v.length) return r(v); speechSynthesis.onvoiceschanged=()=>r(speechSynthesis.getVoices()); }); }
+async function pickEnglishVoice(){ const voices=await getVoicesOnce(); const prefer=[/en-US.*(Female|Samantha|Google US|Jenny|America|Alloy|Natural)/i,/en-GB/i,/en-/i]; for(const rx of prefer){ const hit=voices.find(v=>rx.test(`${v.name} ${v.lang}`)); if(hit) return hit; } return voices[0]||null; }
+async function speakFallback(t){ if(!window.speechSynthesis) return; if(!selectedVoice) selectedVoice=await pickEnglishVoice(); speaking=true; listening=false; const u=new SpeechSynthesisUtterance(t||''); u.lang='en-US'; u.voice=selectedVoice||null; u.rate=1; u.pitch=1; speechSynthesis.cancel(); speechSynthesis.speak(u); u.onend=()=>{ speaking=false; startListenFallback(); }; }
+function startListenFallback(){
+  if(!sttAvailable()){ $callStatus.textContent='Microphone not supported.'; return; }
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
   try{ sr && sr.abort(); }catch{}
-  sr=new SR(); sr.lang='en-US'; sr.interimResults=true; sr.maxAlternatives=1; sr.continuous=true;
-  listening=true; speaking=false; $callStatus.textContent="Tell me, how can I help you today?";
-  let finalText='';
-  sr.onresult = e => {
-    for(let i=e.resultIndex;i<e.results.length;i++){ const r=e.results[i];
-      if(r.isFinal){ finalText=r[0].transcript.trim(); if(finalText){ try{ sr.abort(); }catch{} listening=false; $callStatus.textContent='…'; askAPI(finalText).then(j=>{ speak(j.nl||'Here is the answer.'); }).catch(()=>{ speak('Sorry, I had trouble understanding that.'); }); }
-    }}
-  };
-  sr.onerror=()=>{ listening=false; setTimeout(startListen, 250); };
-  sr.onend=()=>{ if(!speaking) setTimeout(startListen, 120); };
-  try{ sr.start(); }catch{ setTimeout(startListen, 200); }
+  sr=new SR(); sr.lang='en-US'; sr.interimResults=true; sr.continuous=true;
+  listening=true; $callStatus.textContent="Tell me, how can I help you today?";
+  let final='';
+  sr.onresult=(e)=>{ for(let i=e.resultIndex;i<e.results.length;i++){ const r=e.results[i]; if(r.isFinal){ final=r[0].transcript.trim(); if(final){ try{ sr.abort(); }catch{} listening=false; $callStatus.textContent='…'; askAPI(final).then(j=>speakFallback(j.nl||'Here is the answer.')); }}} };
+  sr.onerror=()=>{ listening=false; setTimeout(startListenFallback,250); };
+  sr.onend=()=>{ if(!speaking) setTimeout(startListenFallback,120); };
+  try{ sr.start(); }catch{ setTimeout(startListenFallback,200); }
 }
 
 /* ================== Mode switching ================== */
 function enterTextMode(){
-  $stream.style.display='block';
-  $vnStream.style.display='none';
-  $textFooter.style.display='block';
-  $vnFooter.style.display='none';
+  $stream.style.display='block'; $vnStream.style.display='none';
+  $textFooter.style.display='block'; $vnFooter.style.display='none';
   leaveCallMode();
 }
 function enterVoiceNoteMode(){
-  $stream.style.display='none';
-  $vnStream.style.display='block';
-  $textFooter.style.display='none';
-  $vnFooter.style.display='block';
+  $stream.style.display='none'; $vnStream.style.display='block';
+  $textFooter.style.display='none'; $vnFooter.style.display='block';
   leaveCallMode();
 }
 async function enterCallMode(){
-  $stream.style.display='none';
-  $vnStream.style.display='none';
-  $textFooter.style.display='none';
-  $vnFooter.style.display='none';
+  $stream.style.display='none'; $vnStream.style.display='none';
+  $textFooter.style.display='none'; $vnFooter.style.display='none';
   $callArea.style.display='flex';
-  if(!audioCtx){ try{ await initMic(); }catch{ $callStatus.textContent='Please allow microphone access.'; return; } startViz(); }
-  await ensureAudioReady(); if(!selectedVoice) selectedVoice=await pickEnglishVoice(); speak('Listening.');
+
+  // Try PRO (OpenAI Realtime). If it fails, fallback.
+  try{
+    await startRealtimeCall();
+  }catch{
+    // Fallback to browser SR/TTS
+    startVizFallback();
+    speakFallback('Listening.');
+  }
 }
 function leaveCallMode(){
-  $callArea.style.display='none';
+  // Realtime cleanup
+  try{ pc && pc.close(); }catch{} pc=null;
+  try{ micStream && micStream.getTracks().forEach(t=>t.stop()); }catch{} micStream=null;
+  // Fallback cleanup
   try{ sr && sr.abort(); }catch{} try{ speechSynthesis.cancel(); }catch{}
   listening=false; speaking=false;
   $viz.style.transform='scale(1)'; $viz.style.borderColor='#bfe7ff'; $viz.style.boxShadow='0 12px 40px rgba(14,165,233,.18)';
   $callStatus.textContent="Tell me, how can I help you today?";
+  $callArea.style.display='none';
 }
 
 $modeToggle.addEventListener('click', (e)=>{
@@ -368,7 +429,7 @@ $kbCancel.addEventListener('click', closeKB);
 $kbSave.addEventListener('click', ()=>{ try{ localStorage.setItem('demo_kb', $kbText.value);}catch{} closeKB(); });
 
 /* ================== Welcome (text mode) ================== */
-messages.push({ role:'assistant', html:`<div>Welcome! Choose <b>Text</b>, leave a <b>Voice Note</b> (controls at the bottom), or use <b>Call</b> for a hands-free conversation. This demo uses simulated numbers tailored by your Company KB.</div>` });
+messages.push({ role:'assistant', html:`<div>Welcome! Choose <b>Text</b>, leave a <b>Voice Note</b> (audio bubble + text reply), or try <b>Call</b> for a breathtaking hands-free conversation. This demo uses simulated numbers tailored by your Company KB.</div>` });
 renderText();
 </script>
 </body>
