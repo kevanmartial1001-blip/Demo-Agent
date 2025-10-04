@@ -49,7 +49,7 @@
   button.ghost{background:#eef2f7;color:#0b0c10}
   button:disabled{opacity:.6;cursor:not-allowed}
 
-  /* Voice-Note stream */
+  /* Voice-Note */
   .audio-note{display:flex;align-items:center;gap:10px}
   .audio-note small{color:#647085}
 
@@ -63,7 +63,7 @@
   .status{margin-top:16px;color:#647085;font-weight:700}
   .prompt{font-size:13px;color:#9aa6b2;margin-top:4px}
 
-  /* Modal (KB) */
+  /* Modal */
   .modal{position:fixed;inset:0;background:rgba(0,0,0,.35);display:none;align-items:center;justify-content:center;z-index:50}
   .sheet{width:min(720px,92%);background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px}
   .sheet h2{margin:0 0 8px 0;font-size:16px}
@@ -110,7 +110,7 @@
         <button id="send">Send</button>
       </div>
 
-      <!-- Quick Actions (WhatsApp / Call / Email via Mailgun) -->
+      <!-- Actions: WhatsApp / Call / Email -->
       <div class="row" style="margin-top:8px; gap:8px; align-items:flex-start; flex-wrap:wrap">
         <div class="box" style="flex:1; min-width:220px">
           <input id="clientPhone" type="tel" placeholder="Client phone (e.g. +34 600 000 000)" />
@@ -129,7 +129,7 @@
       </div>
     </div>
 
-    <!-- VOICE NOTE (only Record / Send) -->
+    <!-- VOICE NOTE (Record / Send) -->
     <div id="vnFooter" class="composer" style="display:none">
       <div class="row box" style="justify-content:center">
         <button id="vnToggle" class="ghost">● Record</button>
@@ -156,11 +156,7 @@
   "example_employee_1": "C. Alvarez",
   "example_employee_2": "M. Duarte",
   "example_employee_3": "S. Ruiz",
-  "demo_client": {
-    "name": "Jane Buyer",
-    "phone": "+34600000000",
-    "email": "jane.buyer@example.com"
-  }
+  "demo_client": { "name": "Jane Buyer", "phone": "+34600000000", "email": "jane.buyer@example.com" }
 }</textarea>
     </div>
     <div class="row">
@@ -172,8 +168,8 @@
 
 <script>
 /* ====== Elements & state ====== */
-let messages = [];       // Text mode history
-let vnMessages = [];     // Voice Note history (separate)
+let messages = [];       // Text mode
+let vnMessages = [];     // Voice Note mode
 
 const $modeToggle = document.getElementById('modeToggle');
 const $stream = document.getElementById('stream');
@@ -207,8 +203,6 @@ const $kbSave = document.getElementById('kbSave');
 const $kbCancel = document.getElementById('kbCancel');
 
 try { const saved = localStorage.getItem('demo_kb'); if (saved) $kbText.value = saved; } catch {}
-
-/* Prefill client fields from KB if present */
 try {
   const kb = JSON.parse($kbText.value||'{}');
   if (kb.demo_client?.phone) $clientPhone.value = kb.demo_client.phone;
@@ -229,7 +223,7 @@ function assistantHTML(j){
   return `${nl}<div class="cards">${answer}${explain}${impact}</div>${meta}`;
 }
 function historyForAPI(){
-  const h=[]; // only text-mode history informs the demo agent
+  const h=[];
   for(const m of messages){
     if(m.role==='user') h.push({role:'user',text:m.html.replace(/<[^>]+>/g,'')});
     if(m.role==='assistant'&&m.raw?.meta) h.push({role:'assistant',intent:m.raw.meta.intent,entities:m.raw.entities||{}});
@@ -238,7 +232,15 @@ function historyForAPI(){
 }
 async function askAPI(text){
   let kb={}; try{ kb=JSON.parse($kbText.value);}catch{}
-  const r = await fetch('/api/demoAgent',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({utterance:text,kb, demo:true, history:historyForAPI()})});
+  const client = {
+    phone: ($clientPhone?.value || "").trim(),
+    email: ($clientEmail?.value || "").trim()
+  };
+  const r = await fetch('/api/demoAgent',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ utterance:text, kb, demo:true, history:historyForAPI(), client })
+  });
   if(!r.ok) throw new Error('HTTP '+r.status);
   return r.json();
 }
@@ -271,7 +273,7 @@ function vnPushAudio(blobUrl, durationSec){
 }
 function vnPushAssistant(j){ vnMessages.push({ role:'assistant', html:assistantHTML(j) }); renderVN(); }
 
-/* ====== Text mode events ====== */
+/* ====== Text mode ====== */
 function sendText(){
   const t = $prompt.value.trim(); if(!t) return;
   pushUser(t); $prompt.value='';
@@ -280,7 +282,7 @@ function sendText(){
 $send.addEventListener('click', sendText);
 $prompt.addEventListener('keydown', e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendText(); }});
 
-/* ====== Outbound actions (use last assistant reply as default) ====== */
+/* ====== Outbound actions ====== */
 function latestAssistantText(){
   const last = [...messages].reverse().find(m => m.role==='assistant');
   if (!last) return 'Hello from Your AI Employee.';
@@ -292,7 +294,6 @@ function bodyToSend(){
   const t = ($outboundBody.value||'').trim();
   return t ? t : latestAssistantText();
 }
-
 $btnWA.addEventListener('click', async ()=>{
   const to = ($clientPhone.value||'').trim();
   if (!to) return alert('Enter a WhatsApp phone, e.g. +34...');
@@ -365,14 +366,13 @@ $vnSend.addEventListener('click', async ()=>{
 function blobToBase64(blob){ return new Promise((resolve)=>{ const r=new FileReader(); r.onload=()=>resolve(r.result); r.readAsDataURL(blob); }); }
 
 /* ====== Call mode (OpenAI Realtime → fallback SR/TTS) ====== */
-let pc=null, micStream=null, useRealtime=false;
+let pc=null, micStream=null;
 let audioCtx=null, analyser=null, rafId=null, sr=null, speaking=false, listening=false;
 
 async function startRealtimeCall(){
   const resp = await fetch('/api/realtimeSession');
   if (!resp.ok) throw new Error('No realtime session available');
   const { websocket_url, client_secret } = await resp.json();
-  useRealtime = true;
 
   micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation:true, noiseSuppression:true, autoGainControl:true } });
   pc = new RTCPeerConnection();
@@ -478,7 +478,6 @@ $gearBtn.addEventListener('click', openKB);
 $kbCancel.addEventListener('click', closeKB);
 $kbSave.addEventListener('click', ()=>{
   try{ localStorage.setItem('demo_kb', $kbText.value);}catch{}
-  // re-fill client fields if present
   try{
     const kb = JSON.parse($kbText.value||'{}');
     if (kb.demo_client?.phone) $clientPhone.value = kb.demo_client.phone;
@@ -488,7 +487,7 @@ $kbSave.addEventListener('click', ()=>{
 });
 
 /* ====== Welcome ====== */
-messages.push({ role:'assistant', html:`<div>Welcome! Choose <b>Text</b>, leave a <b>Voice Note</b> (audio bubble + text reply), or try <b>Call</b> for a hands-free conversation. Use the actions below to send WhatsApp, place a call, or email the client — exactly like production, but with demo data.</div>` });
+messages.push({ role:'assistant', html:`<div>Welcome! Choose <b>Text</b>, leave a <b>Voice Note</b>, or try <b>Call</b> for a hands-free conversation. Use the actions below to send WhatsApp, place a call, or email the client — exactly like production, with demo data.</div>` });
 renderText();
 </script>
 </body>
