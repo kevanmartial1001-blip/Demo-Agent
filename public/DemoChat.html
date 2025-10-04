@@ -124,7 +124,7 @@
 </div>
 
 <script>
-/* ====== Elements & state ====== */
+/* ===== Elements & state ===== */
 let messages = []; // text mode only
 const $modeToggle = document.getElementById('modeToggle');
 const $stream = document.getElementById('stream');
@@ -142,8 +142,8 @@ const $kbCancel = document.getElementById('kbCancel');
 
 try { const saved = localStorage.getItem('demo_kb'); if (saved) $kbText.value = saved; } catch {}
 
-/* ====== Render (Text mode) ====== */
-function esc(s){ return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&gt;','>':'&gt;'}[c])); }
+/* ===== Render (Text mode) ===== */
+function esc(s){ return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 function tableHTML(t){ if(!t||!t.columns||!t.rows) return ''; let h='<table><thead><tr>'; for(const c of t.columns) h+=`<th>${esc(String(c))}</th>`; h+='</tr></thead><tbody>'; for(const r of t.rows) h+='<tr>'+r.map(v=>`<td>${esc(String(v))}</td>`).join('')+'</tr>'; h+='</tbody></table>'; return h; }
 function assistantHTML(j){
   const nl = j.nl ? `<div>${esc(j.nl)}</div>` : '';
@@ -169,7 +169,7 @@ function historyForAPI(){
   return h.slice(-12);
 }
 
-/* ====== API helper ====== */
+/* ===== API helper ===== */
 async function askAPI(text){
   let kb={}; try{ kb=JSON.parse($kbText.value);}catch{}
   const r = await fetch('/api/demoAgent',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({utterance:text,kb, demo:true, history:historyForAPI()})});
@@ -177,7 +177,7 @@ async function askAPI(text){
   return r.json();
 }
 
-/* ====== Text mode events ====== */
+/* ===== Text mode events ===== */
 function sendText(){
   const t = $prompt.value.trim(); if(!t) return;
   pushUser(t); $prompt.value='';
@@ -186,9 +186,52 @@ function sendText(){
 $send.addEventListener('click', sendText);
 $prompt.addEventListener('keydown', e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendText(); }});
 
-/* ====== Voice mode (no transcripts; always-on) ====== */
+/* ===== Voice mode (no transcripts; always-on) ===== */
 let audioCtx=null, analyser=null, micSource=null, rafId=null;
 let sr=null, listening=false, speaking=false;
+
+// --- TTS reliability helpers ---
+let selectedVoice = null;
+
+function getVoicesOnce() {
+  return new Promise((resolve) => {
+    const v = speechSynthesis.getVoices();
+    if (v && v.length) return resolve(v);
+    speechSynthesis.onvoiceschanged = () => resolve(speechSynthesis.getVoices());
+  });
+}
+async function pickEnglishVoice() {
+  if (!window.speechSynthesis) return null;
+  const voices = await getVoicesOnce();
+  const prefer = [
+    /en-US.*(Female|Samantha|Google US|Jenny|America|Karen|Alloy)/i,
+    /en-GB/i,
+    /en-/i
+  ];
+  for (const rx of prefer) {
+    const hit = voices.find(v => rx.test(`${v.name} ${v.lang}`));
+    if (hit) return hit;
+  }
+  return voices[0] || null;
+}
+async function ensureAudioReady() {
+  try { if (audioCtx && audioCtx.state === 'suspended') await audioCtx.resume(); } catch {}
+  try { speechSynthesis.resume(); } catch {}
+}
+async function speak(text) {
+  if (!window.speechSynthesis) return;
+  await ensureAudioReady();
+  if (!selectedVoice) selectedVoice = await pickEnglishVoice();
+
+  speaking = true; listening = false; $callStatus.textContent = '…';
+  const u = new SpeechSynthesisUtterance(text || '');
+  u.lang = 'en-US';
+  u.voice = selectedVoice || null;
+  u.rate = 1; u.pitch = 1; u.volume = 1;
+  speechSynthesis.cancel();
+  speechSynthesis.speak(u);
+  u.onend = () => { speaking = false; startListen(); };
+}
 
 function sttAvailable(){ return !!(window.SpeechRecognition || window.webkitSpeechRecognition); }
 
@@ -222,15 +265,6 @@ function startViz(){
   if (!rafId) rafId = requestAnimationFrame(tick);
 }
 
-function speakOut(text){
-  if (!window.speechSynthesis) return;
-  speaking=true; listening=false; $callStatus.textContent='…';
-  const u = new SpeechSynthesisUtterance(text||'');
-  u.lang='en-US'; u.rate=1; u.pitch=1;
-  speechSynthesis.cancel(); speechSynthesis.speak(u);
-  u.onend = ()=>{ speaking=false; startListen(); };
-}
-
 function startListen(){
   if (!sttAvailable()){ $callStatus.textContent='Microphone not supported in this browser.'; return; }
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -242,8 +276,8 @@ function startListen(){
     $callStatus.textContent='…'; // thinking
     askAPI(text).then(j=>{
       // Voice: speak answer; DO NOT push to messages.
-      speakOut(j.nl || 'Here is the answer.');
-    }).catch(()=>{ /* swallow */ });
+      speak(j.nl || 'Here is the answer.');
+    }).catch(()=>{ /* ignore */ });
   };
   sr.onerror = ()=>{ if (!speaking) setTimeout(startListen, 300); };
   sr.onend   = ()=>{ if (!speaking) setTimeout(startListen, 150); }; // auto-restart loop
@@ -255,12 +289,15 @@ async function enterVoiceMode(){
   $stream.style.display='none';
   $textFooter.style.display='none';
   $callArea.style.display='flex';
+  // Prep audio + mic visualizer
   if (!audioCtx){
     try{ await initMic(); }catch(e){ $callStatus.textContent='Please allow microphone access.'; return; }
     startViz();
   }
-  // Start the always-on loop (counts as user gesture due to toggle click)
-  startListen();
+  await ensureAudioReady();
+  if (!selectedVoice) selectedVoice = await pickEnglishVoice();
+  // Gentle audio prime so TTS is unlocked
+  speak("Listening.");
 }
 function leaveVoiceMode(){
   try{ sr && sr.abort(); }catch{} try{ speechSynthesis.cancel(); }catch{}
@@ -271,7 +308,7 @@ function leaveVoiceMode(){
   $callArea.style.display='none';
 }
 
-/* ====== Mode toggle ====== */
+/* ===== Mode toggle ===== */
 $modeToggle.addEventListener('click', (e)=>{
   const btn=e.target.closest('button'); if(!btn) return;
   [...$modeToggle.querySelectorAll('button')].forEach(b=>b.classList.remove('active'));
@@ -281,14 +318,14 @@ $modeToggle.addEventListener('click', (e)=>{
   else { leaveVoiceMode(); }
 });
 
-/* ====== KB modal ====== */
+/* ===== KB modal ===== */
 function openKB(){ $kbModal.style.display='flex'; }
 function closeKB(){ $kbModal.style.display='none'; }
 $gearBtn.addEventListener('click', openKB);
 $kbCancel.addEventListener('click', closeKB);
 $kbSave.addEventListener('click', ()=>{ try{ localStorage.setItem('demo_kb', $kbText.value);}catch{} closeKB(); });
 
-/* ====== Welcome (text mode) ====== */
+/* ===== Welcome (text mode) ===== */
 messages.push({ role:'assistant', html:`<div>Hi! I’m your AI Employee. Type below — or switch to <b>Voice</b> to talk hands-free. This demo uses simulated numbers tailored by your Company KB.</div>` });
 render();
 </script>
