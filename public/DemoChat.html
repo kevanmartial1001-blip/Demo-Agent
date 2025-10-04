@@ -9,13 +9,14 @@
     --bg:#f6f7fb; --panel:#ffffff; --ink:#0b0c10; --muted:#647085; --line:#e6e8f0; --accent:#0ea5e9;
     --bubble-user:#e8f3ff; --bubble-ai:#ffffff; --welcome:#eef1f6;
     --speak:#1e90ff; --listen:#10b981;
+    --ok:#16a34a; --warn:#f59e0b;
   }
   *{box-sizing:border-box} html,body{height:100%}
   body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 ui-sans-serif,system-ui,Inter,Segoe UI,Arial}
   .app{display:flex;flex-direction:column;height:100%}
 
   header{position:sticky;top:0;background:var(--panel);border-bottom:1px solid var(--line);
-    padding:12px 16px;display:flex;align-items:center;gap:12px;z-index:20}
+    padding:12px 16px;display:flex;align-items:center;gap:12px;z-index:50}
   header h1{font-size:15px;font-weight:600;margin:0}
   .toggle{display:flex;border:1px solid var(--line);border-radius:999px;overflow:hidden}
   .toggle button{border:none;background:#fff;padding:8px 12px;cursor:pointer;font-weight:600;color:#334155}
@@ -26,7 +27,7 @@
   main{flex:1;overflow:auto;position:relative}
   .welcomeOverlay{
     position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
-    pointer-events:none; /* important: does NOT block clicks */
+    pointer-events:none; z-index:1;
   }
   .welcomeBubble{
     background:var(--welcome); border:1px solid var(--line); color:#4b5563;
@@ -51,13 +52,20 @@
   .dot:nth-child(3){animation-delay:.3s}
   @keyframes bounce{0%,80%,100%{transform:translateY(0)}40%{transform:translateY(-4px)}}
 
+  /* Research status card */
+  .statusCard{border:1px dashed var(--line);background:#fff;border-radius:12px;padding:10px 12px;margin-top:8px}
+  .statusRow{display:flex;align-items:center;gap:8px;color:#647085;font-size:14px;margin:6px 0}
+  .statusDot{width:8px;height:8px;border-radius:50%;background:#cbd5e1}
+  .statusRow.active .statusDot{background:var(--warn)}
+  .statusRow.done .statusDot{background:var(--ok)}
+  .statusRow.done{color:#475569}
+
   footer{position:sticky;bottom:0;background:var(--panel);border-top:1px solid var(--line);padding:12px 16px;z-index:10}
   .composer{max-width:820px;margin:0 auto}
   .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
   .box{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:8px 10px;flex:1}
   input,button,textarea{font:inherit}
-  input[type="text"], textarea{flex:1;border:none;outline:none;background:transparent;padding:8px 6px}
-  textarea{min-height:38px;resize:vertical}
+  input[type="text"]{flex:1;border:none;outline:none;background:transparent;padding:8px 6px}
   button{border:none;background:var(--accent);color:#fff;padding:10px 14px;border-radius:12px;font-weight:600;cursor:pointer}
   button.ghost{background:#eef2f7;color:#0b0c10}
   button:disabled{opacity:.6;cursor:not-allowed}
@@ -77,10 +85,9 @@
   .prompt{font-size:13px;color:#9aa6b2;margin-top:4px}
 
   /* Modal */
-  .modal{position:fixed;inset:0;background:rgba(0,0,0,.35);display:none;align-items:center;justify-content:center;z-index:50}
-  .sheet{width:min(860px,92%);background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px}
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.35);display:none;align-items:center;justify-content:center;z-index:60}
+  .sheet{width:min(560px,92%);background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px}
   .sheet h2{margin:0 0 8px 0;font-size:16px}
-  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
   .panel{border:1px solid var(--line);border-radius:12px;padding:12px;background:#fafbff}
   .panel h3{margin:0 0 8px 0;font-size:14px}
   .field{display:flex;flex-direction:column;gap:6px;margin:8px 0}
@@ -99,10 +106,10 @@
       <button type="button" data-mode="call">Call</button>
     </div>
     <div class="spacer"></div>
-    <button type="button" id="gearBtn" class="icon-btn" title="Settings & KB">⚙️</button>
+    <button type="button" id="gearBtn" class="icon-btn" title="Settings">⚙️</button>
   </header>
 
-  <main>
+  <main id="main">
     <!-- Welcome overlay (doesn't block clicks) -->
     <div id="welcome" class="welcomeOverlay">
       <div class="welcomeBubble">
@@ -111,13 +118,13 @@
     </div>
 
     <!-- TEXT STREAM -->
-    <div id="stream" class="stream"></div>
+    <div id="stream" class="stream" aria-live="polite"></div>
 
     <!-- VOICE NOTE STREAM -->
-    <div id="vnStream" class="stream" style="display:none"></div>
+    <div id="vnStream" class="stream" style="display:none" aria-live="polite"></div>
 
     <!-- CALL CANVAS -->
-    <div id="callArea" class="callWrap">
+    <div id="callArea" class="callWrap" aria-live="polite">
       <div id="viz" class="viz"></div>
       <div id="callStatus" class="status">Tell me, how can I help you today?</div>
       <div class="prompt">Hands-free: just speak. I’ll answer out loud, then listen again.</div>
@@ -143,54 +150,31 @@
   </footer>
 </div>
 
-<!-- SETTINGS & KB MODAL -->
+<!-- SETTINGS MODAL -->
 <div id="kbModal" class="modal" aria-hidden="true">
   <div class="sheet" role="dialog" aria-modal="true" aria-label="Settings">
     <h2>Settings</h2>
-    <div class="grid">
-      <!-- Contact & Tests -->
-      <div class="panel">
-        <h3>Contact for Demo Actions</h3>
-        <div class="field">
-          <label>Phone (E.164) <span class="small">Used for WhatsApp & Calls</span></label>
-          <input id="setPhone" type="tel" placeholder="+34 600 000 000" />
-        </div>
-        <div class="field">
-          <label>Email <span class="small">Used for Email actions</span></label>
-          <input id="setEmail" type="email" placeholder="client@company.com" />
-        </div>
-        <div class="field">
-          <label>Test message (optional)</label>
-          <textarea id="testMsg" placeholder="Message for test actions"></textarea>
-        </div>
-        <div class="row" style="gap:8px">
-          <button id="testWA" class="ghost" type="button">Test WhatsApp</button>
-          <button id="testCall" class="ghost" type="button">Test Call</button>
-          <button id="testEmail" class="ghost" type="button">Test Email</button>
-          <div class="spacer"></div>
-          <button id="kbSave" title="Save settings" type="button">Save</button>
-          <button id="kbCancel" class="ghost" type="button">Close</button>
-        </div>
+    <div class="panel">
+      <h3>Contact for Demo Actions</h3>
+      <div class="field">
+        <label>Phone (E.164) <span class="small">Used for WhatsApp & Calls</span></label>
+        <input id="setPhone" type="tel" placeholder="+34 600 000 000" />
       </div>
-
-      <!-- Company KB -->
-      <div class="panel">
-        <h3>Company KB (JSON)</h3>
-        <div class="field">
-          <textarea id="kbText" style="height:340px">{
-  "company_id": "acme-123",
-  "company_name": "ACME Retail Group",
-  "sector": "Retail",
-  "primary_region": "Marbella",
-  "example_top_product": "Ultra Hoodie",
-  "example_top_region": "Andalucía",
-  "example_employee_1": "C. Alvarez",
-  "example_employee_2": "M. Duarte",
-  "example_employee_3": "S. Ruiz",
-  "demo_client": { "name": "Jane Buyer", "phone": "+34600000000", "email": "jane.buyer@example.com" }
-}</textarea>
-        </div>
-        <div class="small">The KB personalizes demo answers. In production, this will point to your real data sources.</div>
+      <div class="field">
+        <label>Email <span class="small">Used for Email actions</span></label>
+        <input id="setEmail" type="email" placeholder="client@company.com" />
+      </div>
+      <div class="field">
+        <label>Test message (optional)</label>
+        <textarea id="testMsg" placeholder="Message for test actions"></textarea>
+      </div>
+      <div class="row" style="gap:8px">
+        <button id="testWA" class="ghost" type="button">Test WhatsApp</button>
+        <button id="testCall" class="ghost" type="button">Test Call</button>
+        <button id="testEmail" class="ghost" type="button">Test Email</button>
+        <div class="spacer"></div>
+        <button id="kbSave" title="Save settings" type="button">Save</button>
+        <button id="kbCancel" class="ghost" type="button">Close</button>
       </div>
     </div>
   </div>
@@ -203,6 +187,7 @@ let vnMessages = [];     // Voice Note mode
 let firstUserMessageSent = false;
 
 const $modeToggle = document.getElementById('modeToggle');
+const $main = document.getElementById('main');
 const $stream = document.getElementById('stream');
 const $vnStream = document.getElementById('vnStream');
 
@@ -212,14 +197,12 @@ const $vnFooter = document.getElementById('vnFooter');
 const $callArea = document.getElementById('callArea');
 const $viz = document.getElementById('viz');
 const $callStatus = document.getElementById('callStatus');
-const $remoteAudio = document.getElementById('remoteAudio');
 
 const $prompt = document.getElementById('prompt');
 const $send = document.getElementById('send');
 
 const $gearBtn = document.getElementById('gearBtn');
 const $kbModal = document.getElementById('kbModal');
-const $kbText = document.getElementById('kbText');
 const $kbSave = document.getElementById('kbSave');
 const $kbCancel = document.getElementById('kbCancel');
 
@@ -232,48 +215,77 @@ const $testEmail= document.getElementById('testEmail');
 
 const $welcome = document.getElementById('welcome');
 
-try { const saved = localStorage.getItem('demo_kb'); if (saved) $kbText.value = saved; } catch {}
+/* Load saved contacts */
 try { const savedPhone = localStorage.getItem('demo_contact_phone'); if (savedPhone) $setPhone.value = savedPhone; } catch {}
 try { const savedEmail = localStorage.getItem('demo_contact_email'); if (savedEmail) $setEmail.value = savedEmail; } catch {}
-try {
-  const kb = JSON.parse($kbText.value||'{}');
-  if (!$setPhone.value && kb.demo_client?.phone) $setPhone.value = kb.demo_client.phone;
-  if (!$setEmail.value && kb.demo_client?.email) $setEmail.value = kb.demo_client.email;
-} catch {}
 
 /* ====== Helpers ====== */
-function esc(s){ return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt','>':'&gt;'}[c])); }
+function esc(s){ return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 function tableHTML(t){ if(!t||!t.columns||!t.rows) return ''; let h='<table><thead><tr>'; for(const c of t.columns) h+=`<th>${esc(String(c))}</th>`; h+='</tr></thead><tbody>'; for(const r of t.rows) h+='<tr>'+r.map(v=>`<td>${esc(String(v))}</td>`).join('')+'</tr>'; h+='</tbody></table>'; return h; }
+function scrollToBottom(el){ el.scrollTo({ top: el.scrollHeight, behavior:'smooth' }); }
 
-/* ====== Typing indicator ====== */
+/* ====== Typing indicator & delays ====== */
 function showTyping(targetStreamEl){
   const wrap = document.createElement('div'); wrap.className='msg';
   wrap.innerHTML = `<div class="bubble"><div class="role">Your AI Employee</div><span class="typing"><span>typing</span><span class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span></span></div>`;
   targetStreamEl.appendChild(wrap);
-  targetStreamEl.scrollTop = targetStreamEl.scrollHeight;
+  scrollToBottom(targetStreamEl);
   return () => wrap.remove();
 }
 function humanDelayFor(text){
   const len = (text||'').length;
-  const base = 800;                // base 0.8s
-  const perChar = Math.min(30, 30); // 30ms/char (capped)
-  let ms = base + Math.min(4000, Math.max(700, Math.round(len * 18))); // ~1.5s–5s typical
-  return Math.max(1500, Math.min(ms, 5000));
+  let ms = 1000 + Math.min(4500, Math.round(len * 22)); // ~2s–5.5s typical
+  return Math.max(2000, Math.min(ms, 5500));
 }
 
-/* ====== Script rendering (Text) ====== */
-async function playScriptIntoText(resp){
+/* ====== Research status card ====== */
+async function showStatusSequence(targetStreamEl){
+  const steps = ["Checking with the operations team","Gathering the data","Organizing everything"];
+  const wrap = document.createElement('div');
+  wrap.className = 'msg';
+  wrap.innerHTML = `<div class="bubble"><div class="role">Your AI Employee</div>
+    <div class="statusCard">
+      ${steps.map((s,i)=>`<div class="statusRow ${i===0?'active':''}" data-i="${i}">
+        <span class="statusDot"></span><span>${esc(s)}</span>
+      </div>`).join('')}
+    </div></div>`;
+  targetStreamEl.appendChild(wrap); scrollToBottom(targetStreamEl);
+
+  const rows = [...wrap.querySelectorAll('.statusRow')];
+  for (let i=0;i<rows.length;i++){
+    rows.forEach((r,idx)=>{ r.classList.toggle('active', idx===i); r.classList.toggle('done', idx<i); });
+    await new Promise(r=>setTimeout(r, 900 + i*500)); // 0.9s, 1.4s, 1.9s
+  }
+  rows.forEach(r=>r.classList.remove('active'));
+  rows.forEach(r=>r.classList.add('done'));
+  // fade out after short pause
+  await new Promise(r=>setTimeout(r, 400));
+  wrap.style.transition='opacity .35s ease';
+  wrap.style.opacity='0';
+  setTimeout(()=>wrap.remove(), 400);
+}
+
+/* ====== Shared renderer to show final answer (ignores step-by-step narration) ====== */
+async function renderFinalAnswer(resp, targetStreamEl, targetMessages){
   const { script = [], cards = [], meta = {} } = resp;
 
-  for (const step of script) {
-    const removeTyping = showTyping($stream);
-    const delay = step.delay_ms || humanDelayFor(step.text||'');
-    await new Promise(r=>setTimeout(r, delay));
-    removeTyping();
+  // 1) status sequence (progress-like)
+  await showStatusSequence(targetStreamEl);
 
-    messages.push({ role:'assistant', html: esc(step.text), raw:{ meta } });
-    renderText();
+  // 2) typing pause
+  const lastText = (script.length ? (script[script.length-1].text||'') : '');
+  const removeTyping = showTyping(targetStreamEl);
+  const delay = (script.length ? humanDelayFor(lastText) : 2200);
+  await new Promise(r=>setTimeout(r, delay));
+  removeTyping();
+
+  // 3) final short line (optional)
+  if (lastText && lastText.trim()){
+    targetMessages.push({ role:'assistant', html: esc(lastText), raw:{ meta } });
+    if (targetStreamEl === $stream) renderText(); else renderVN();
   }
+
+  // 4) cards with the data
   if (cards && cards.length){
     const htmlCards = cards.map(c => {
       if (c.format === 'table') {
@@ -282,25 +294,12 @@ async function playScriptIntoText(resp){
         return `<div class="card"><h3>Result</h3><div>${esc(c.value||'')}</div></div>`;
       }
     }).join('');
-    messages.push({ role:'assistant', html: htmlCards, raw:{ meta } });
-    renderText();
+    targetMessages.push({ role:'assistant', html: htmlCards, raw:{ meta } });
+    if (targetStreamEl === $stream) renderText(); else renderVN();
   }
-  if (resp.ask) renderAsk(resp.ask);
 }
 
-/* ====== Script rendering (Call) ====== */
-function speakScript(resp){
-  const steps = resp?.script || [{ text: 'Done.', delay_ms: 0 }];
-  (async ()=>{
-    for (const s of steps){
-      await speakFallback(s.text);
-      const d = Math.min(Number(s.delay_ms||humanDelayFor(s.text||'')), 2000);
-      if (d>0) await new Promise(r=>setTimeout(r,d));
-    }
-  })();
-}
-
-/* ====== Ask (follow-ups with buttons) ====== */
+/* ====== Ask (follow-ups with buttons) – unchanged shape, works if backend returns `ask` ====== */
 function renderAsk(askObj){
   if (!askObj) return;
   const wrap = document.createElement('div');
@@ -309,32 +308,25 @@ function renderAsk(askObj){
     <div class="role">Your AI Employee</div>
     <div>${esc(askObj.question)}</div>
     <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
-      ${askObj.options.map(o => {
-        const disabled = (o.id==='whatsapp' && askObj.requires && !askObj.requires.whatsapp) ||
-                         (o.id==='email'    && askObj.requires && !askObj.requires.email);
-        return `<button class="ghost" data-o="${o.id}" ${disabled?'disabled':''} type="button">${esc(o.label)}</button>`;
-      }).join('')}
+      ${askObj.options.map(o => `<button class="ghost" data-o="${o.id}" type="button">${esc(o.label)}</button>`).join('')}
     </div>
   </div>`;
-  $stream.appendChild(wrap); $stream.scrollTop = $stream.scrollHeight;
-
+  $stream.appendChild(wrap); scrollToBottom($stream);
   wrap.querySelectorAll('button[data-o]').forEach(btn=>{
     btn.addEventListener('click', async ()=>{
       const choice = btn.getAttribute('data-o');
-      let kb={}; try{ kb=JSON.parse($kbText.value);}catch{}
       const client = { phone: getPhone(), email: getEmail() };
-
       const r = await fetch('/api/demoAgent',{
         method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ utterance: `deliver via ${choice}`, kb, client, response_to:{ context_id: askObj.context_id, value: choice }})
+        body: JSON.stringify({ utterance: `deliver via ${choice}`, client })
       });
       const resp = await r.json();
-      await playScriptIntoText(resp);
+      await renderFinalAnswer(resp, $stream, messages);
     });
   });
 }
 
-/* ====== API ====== */
+/* ====== API & history ====== */
 function historyForAPI(){
   const h=[];
   for(const m of messages){
@@ -343,19 +335,9 @@ function historyForAPI(){
   }
   return h.slice(-12);
 }
-
-function getPhone(){
-  return ($setPhone.value || "").trim() ||
-    (JSON.parse($kbText.value||'{}').demo_client?.phone || "").trim();
-}
-function getEmail(){
-  return ($setEmail.value || "").trim() ||
-    (JSON.parse($kbText.value||'{}').demo_client?.email || "").trim();
-}
-
-// askAPI sends mode + client contact info (from Settings/KB)
+function getPhone(){ return ($setPhone.value||'').trim(); }
+function getEmail(){ return ($setEmail.value||'').trim(); }
 async function askAPI(text){
-  let kb={}; try{ kb=JSON.parse($kbText.value);}catch{}
   const client = { phone: getPhone(), email: getEmail() };
   const mode =
     $callArea.style.display === 'flex' ? 'call' :
@@ -364,7 +346,7 @@ async function askAPI(text){
   const r = await fetch('/api/demoAgent',{
     method:'POST',
     headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ utterance:text, kb, demo:true, history:historyForAPI(), client, mode })
+    body: JSON.stringify({ utterance:text, demo:true, history:historyForAPI(), client, mode })
   });
   if(!r.ok) throw new Error('HTTP '+r.status);
   return r.json();
@@ -376,19 +358,20 @@ function renderText(){
     const role = m.role==='user'?'user':'assistant';
     return `<div class="msg ${role}"><div class="bubble">${role==='user'?'<div class="role">You</div>':'<div class="role">Your AI Employee</div>'}${m.html}</div></div>`;
   }).join('');
-  $stream.scrollTop = $stream.scrollHeight;
+  scrollToBottom($stream);
 }
 function pushUser(text){
-  messages.push({role:'user', html:esc(text)});
-  renderText();
+  messages.push({role:'user', html:esc(text)}); renderText();
   if (!firstUserMessageSent) { firstUserMessageSent = true; $welcome.style.display='none'; }
 }
-
 function sendText(){
   const t = $prompt.value.trim(); if(!t) return;
   pushUser(t); $prompt.value='';
   askAPI(t)
-    .then(playScriptIntoText)
+    .then(async (resp)=>{
+      await renderFinalAnswer(resp, $stream, messages);
+      if (resp.ask) renderAsk(resp.ask);
+    })
     .catch(e=>{
       messages.push({role:'assistant', html:`<div class="card"><h3>Error</h3><div>${esc(String(e.message||e))}</div></div>`});
       renderText();
@@ -408,43 +391,19 @@ function renderVN(){
         : '<div class="role">Your AI Employee</div>' + m.html
     }</div></div>`;
   }).join('');
-  $vnStream.scrollTop = $vnStream.scrollHeight;
+  scrollToBottom($vnStream);
 }
 function vnPushAudio(blobUrl, durationSec){
   const html = `<div class="audio-note"><audio controls src="${blobUrl}"></audio><small>${Math.round(durationSec)}s</small></div>`;
   vnMessages.push({ role:'user', html }); renderVN();
-}
-function vnPushAssistant(resp){
-  (async ()=>{
-    const { script = [], cards = [], meta = {} } = resp;
-    for (const step of script) {
-      const removeTyping = showTyping($vnStream);
-      const delay = step.delay_ms || humanDelayFor(step.text||'');
-      await new Promise(r=>setTimeout(r, delay));
-      removeTyping();
-
-      vnMessages.push({ role:'assistant', html: esc(step.text), raw:{ meta } });
-      renderVN();
-    }
-    if (cards && cards.length){
-      const htmlCards = cards.map(c => {
-        if (c.format === 'table') {
-          return `<div class="card"><h3>Result</h3>${tableHTML(c.value)}<div style="color:#6b7280">${esc(c.summary||'')}</div></div>`;
-        } else {
-          return `<div class="card"><h3>Result</h3><div>${esc(c.value||'')}</div></div>`;
-        }
-      }).join('');
-      vnMessages.push({ role:'assistant', html: htmlCards, raw:{ meta } });
-      renderVN();
-    }
-  })();
+  if (!firstUserMessageSent){ firstUserMessageSent=true; $welcome.style.display='none'; }
 }
 const vnPerms = { audio: { echoCancellation:true, noiseSuppression:true, autoGainControl:true } };
-$vnToggle.addEventListener('click', async ()=>{
+document.getElementById('vnToggle').addEventListener('click', async ()=>{
   if (vnMediaRec && vnMediaRec.state === 'recording') {
     try { vnMediaRec.stop(); } catch {}
-    $vnToggle.textContent = '● Record';
-    $vnSend.disabled = !vnBlob;
+    document.getElementById('vnToggle').textContent = '● Record';
+    document.getElementById('vnSend').disabled = !vnBlob;
     return;
   }
   try{
@@ -453,21 +412,21 @@ $vnToggle.addEventListener('click', async ()=>{
     vnMediaRec = new MediaRecorder(vnStreamLive,{ mimeType: vnMime });
     vnChunks = []; vnStartAt = Date.now(); vnBlob = null; vnDurationSec = 0;
     vnMediaRec.ondataavailable = e=>{ if (e.data?.size) vnChunks.push(e.data); };
-    vnMediaRec.onstart = ()=>{ $vnToggle.textContent='■ Stop'; $vnSend.disabled=true; };
+    vnMediaRec.onstart = ()=>{ document.getElementById('vnToggle').textContent='■ Stop'; document.getElementById('vnSend').disabled=true; };
     vnMediaRec.onstop = ()=>{
       vnDurationSec = (Date.now()-vnStartAt)/1000;
       vnBlob = new Blob(vnChunks,{type: vnMime});
       try { vnStreamLive.getTracks().forEach(t=>t.stop()); } catch {}
-      $vnSend.disabled=false; $vnToggle.textContent='● Record';
+      document.getElementById('vnSend').disabled=false; document.getElementById('vnToggle').textContent='● Record';
     };
     vnMediaRec.start();
   }catch(e){ alert('Mic permission needed'); }
 });
-$vnSend.addEventListener('click', async ()=>{
+document.getElementById('vnSend').addEventListener('click', async ()=>{
   if(!vnBlob) return;
   const url = URL.createObjectURL(vnBlob);
   vnPushAudio(url, vnDurationSec);
-  $vnSend.disabled = true;
+  document.getElementById('vnSend').disabled = true;
 
   const base64 = await blobToBase64(vnBlob);
   const res = await fetch('/api/transcribe', {
@@ -475,10 +434,13 @@ $vnSend.addEventListener('click', async ()=>{
     body: JSON.stringify({ audio: base64, mime: vnMime })
   });
   const j = await res.json();
-  if (!j.ok){ vnPushAssistant({ script:[{text:'Transcription failed.',delay_ms:0}], cards:[] }); $vnSend.disabled=false; return; }
+  if (!j.ok){
+    vnMessages.push({ role:'assistant', html:`<div class="card"><h3>Error</h3><div>Transcription failed.</div></div>`});
+    renderVN(); document.getElementById('vnSend').disabled=false; return;
+  }
   const text = j.text || '';
-  askAPI(text).then(r => { vnPushAssistant(r); $vnSend.disabled=false; })
-              .catch(() => { vnPushAssistant({ script:[{text:'Sorry, there was an error.',delay_ms:0}], cards:[] }); $vnSend.disabled=false; });
+  askAPI(text).then(async (resp)=>{ await renderFinalAnswer(resp, $vnStream, vnMessages); document.getElementById('vnSend').disabled=false; })
+              .catch(()=>{ vnMessages.push({ role:'assistant', html:`<div class="card"><h3>Error</h3><div>Sorry, there was an error.</div></div>`}); renderVN(); document.getElementById('vnSend').disabled=false; });
 });
 function blobToBase64(blob){ return new Promise((resolve)=>{ const r=new FileReader(); r.onload=()=>resolve(r.result); r.readAsDataURL(blob); }); }
 
@@ -494,12 +456,9 @@ function startVizFallback(){
     });
     audioCtx = new (window.AudioContext||window.webkitAudioContext)();
     const src = audioCtx.createMediaStreamSource(stream);
-
-    // simple HPF + analyser = cheap denoise for visualization/gating
     const hpf = audioCtx.createBiquadFilter(); hpf.type='highpass'; hpf.frequency.value = 120;
     analyser = audioCtx.createAnalyser(); analyser.fftSize = 1024;
     src.connect(hpf).connect(analyser);
-
     const data = new Float32Array(analyser.fftSize);
     function tick(now){
       analyser.getFloatTimeDomainData(data);
@@ -536,13 +495,18 @@ function startListenFallback(){
   sr=new SR(); sr.lang='en-US'; sr.interimResults=true; sr.continuous=true;
   listening=true; $callStatus.textContent="Tell me, how can I help you today?";
   let final='';
-  sr.onresult=(e)=>{ for(let i=e.resultIndex;i<e.results.length;i++){ const r=e.results[i]; if(r.isFinal){ final=r[0].transcript.trim(); if(final){ try{ sr.abort(); }catch{} listening=false; $callStatus.textContent='…'; askAPI(final).then(resp=>speakScript(resp)); }}} };
+  sr.onresult=(e)=>{ for(let i=e.resultIndex;i<e.results.length;i++){ const r=e.results[i]; if(r.isFinal){ final=r[0].transcript.trim(); if(final){ try{ sr.abort(); }catch{} listening=false; $callStatus.textContent='…'; askAPI(final).then(resp=>{ // speak only final
+        (async ()=>{
+          await showStatusSequence($callArea); // reuse same visual rhythm
+          await speakFallback((resp?.script?.at(-1)?.text)||'Here is your update.');
+        })();
+      }); }}} };
   sr.onerror=()=>{ listening=false; setTimeout(startListenFallback,250); };
   sr.onend=()=>{ if(!speaking) setTimeout(startListenFallback,120); };
   try{ sr.start(); }catch{ setTimeout(startListenFallback,200); }
 }
 
-/* ====== Mode switching (ensure clicks work) ====== */
+/* ====== Mode switching (clicks fixed) ====== */
 function enterTextMode(){
   $stream.style.display='block'; $vnStream.style.display='none';
   $textFooter.style.display='block'; $vnFooter.style.display='none';
@@ -564,7 +528,6 @@ function leaveCallMode(){
   try{ sr && sr.abort(); }catch{} try{ speechSynthesis.cancel(); }catch{}
   listening=false; speaking=false;
   $viz.style.transform='scale(1)'; $viz.style.borderColor='#bfe7ff'; $viz.style.boxShadow='0 12px 40px rgba(14,165,233,.18)';
-  $callStatus.textContent="Tell me, how can I help you today?";
   $callArea.style.display='none';
 }
 $modeToggle.addEventListener('click', (e)=>{
@@ -583,7 +546,6 @@ function closeKB(){ $kbModal.style.display='none'; $kbModal.setAttribute('aria-h
 $gearBtn.addEventListener('click', openKB);
 $kbCancel.addEventListener('click', closeKB);
 $kbSave.addEventListener('click', ()=>{
-  try{ localStorage.setItem('demo_kb', $kbText.value);}catch{}
   try{ localStorage.setItem('demo_contact_phone', ($setPhone.value||'').trim()); }catch{}
   try{ localStorage.setItem('demo_contact_email', ($setEmail.value||'').trim()); }catch{}
   closeKB();
