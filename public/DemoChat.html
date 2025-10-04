@@ -41,17 +41,16 @@
   footer{position:sticky;bottom:0;background:var(--panel);border-top:1px solid var(--line);padding:12px 16px}
   .composer{max-width:820px;margin:0 auto}
   .row{display:flex;gap:10px;align-items:center}
-  .grow{flex:1}
-  input,button,textarea{font:inherit}
   .box{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:8px 10px}
+  input,button,textarea{font:inherit}
   input[type="text"]{flex:1;border:none;outline:none;background:transparent;padding:8px 6px}
   button{border:none;background:var(--accent);color:#fff;padding:10px 14px;border-radius:12px;font-weight:600;cursor:pointer}
   button.ghost{background:#eef2f7;color:#0b0c10}
   button:disabled{opacity:.6;cursor:not-allowed}
-
-  /* Voice Note controls */
-  .vn-controls{display:flex;gap:10px;align-items:center;justify-content:center}
   .pill{border:1px solid var(--line);border-radius:999px;padding:6px 10px;background:#fff;color:#647085;font-weight:600}
+
+  /* Voice Note stream (separate section) */
+  #vnStream .role{font-size:12px;color:#647085;margin-bottom:6px}
 
   /* Call canvas */
   .callWrap{display:none;flex-direction:column;align-items:center;justify-content:center;min-height:62vh;padding:8px 0}
@@ -89,18 +88,8 @@
     <!-- TEXT STREAM -->
     <div id="stream" class="stream"></div>
 
-    <!-- VOICE NOTE UI -->
-    <div id="voiceNoteArea" class="stream" style="display:none;text-align:center">
-      <div class="vn-controls box" style="justify-content:center">
-        <button id="vnRecord" class="ghost">● Record</button>
-        <button id="vnStop" class="ghost" disabled>Stop</button>
-        <button id="vnSend" disabled>Send</button>
-        <span id="vnStatus" class="pill">Idle</span>
-      </div>
-      <div style="margin-top:12px">
-        <audio id="vnPlayer" controls style="display:none"></audio>
-      </div>
-    </div>
+    <!-- VOICE NOTE STREAM (answers render here; separate from Text) -->
+    <div id="vnStream" class="stream" style="display:none"></div>
 
     <!-- CALL CANVAS -->
     <div id="callArea" class="callWrap">
@@ -110,14 +99,28 @@
     </div>
   </main>
 
-  <!-- TEXT COMPOSER ONLY -->
-  <footer id="textFooter">
-    <div class="composer">
+  <!-- FOOTERS (switch per mode) -->
+  <footer>
+    <!-- TEXT COMPOSER -->
+    <div id="textFooter" class="composer">
       <div class="row box">
         <input id="prompt" type="text" placeholder="Ask anything for your business…" />
         <button id="send">Send</button>
       </div>
     </div>
+
+    <!-- VOICE NOTE CONTROLS (bottom) -->
+    <div id="vnFooter" class="composer" style="display:none">
+      <div class="row box" style="justify-content:center">
+        <button id="vnRecord" class="ghost">● Record</button>
+        <button id="vnStop" class="ghost" disabled>Stop</button>
+        <button id="vnSend" disabled>Send</button>
+        <span id="vnStatus" class="pill">Idle</span>
+        <audio id="vnPlayer" controls style="display:none"></audio>
+      </div>
+    </div>
+
+    <!-- CALL has no footer controls -->
   </footer>
 </div>
 
@@ -147,17 +150,24 @@
 </div>
 
 <script>
-/* ================== Elements & text-mode state ================== */
-let messages = []; // only for Text mode UI
+/* ================== Elements & state ================== */
+let messages = [];              // Text-mode messages
+let vnMessages = [];            // Voice-note messages (separate stream)
+
 const $modeToggle = document.getElementById('modeToggle');
 const $stream = document.getElementById('stream');
-const $voiceNoteArea = document.getElementById('voiceNoteArea');
+const $vnStream = document.getElementById('vnStream');
+
 const $textFooter = document.getElementById('textFooter');
+const $vnFooter = document.getElementById('vnFooter');
+
 const $callArea = document.getElementById('callArea');
 const $viz = document.getElementById('viz');
 const $callStatus = document.getElementById('callStatus');
+
 const $prompt = document.getElementById('prompt');
 const $send = document.getElementById('send');
+
 const $gearBtn = document.getElementById('gearBtn');
 const $kbModal = document.getElementById('kbModal');
 const $kbText = document.getElementById('kbText');
@@ -166,7 +176,7 @@ const $kbCancel = document.getElementById('kbCancel');
 
 try { const saved = localStorage.getItem('demo_kb'); if (saved) $kbText.value = saved; } catch {}
 
-/* ================== Text-mode rendering ================== */
+/* ================== Shared helpers ================== */
 function esc(s){ return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 function tableHTML(t){ if(!t||!t.columns||!t.rows) return ''; let h='<table><thead><tr>'; for(const c of t.columns) h+=`<th>${esc(String(c))}</th>`; h+='</tr></thead><tbody>'; for(const r of t.rows) h+='<tr>'+r.map(v=>`<td>${esc(String(v))}</td>`).join('')+'</tr>'; h+='</tbody></table>'; return h; }
 function assistantHTML(j){
@@ -179,21 +189,14 @@ function assistantHTML(j){
   const meta = `<div class="meta"><span class="chip">Intent: ${esc(j.meta?.intent||'')}</span><span class="chip">Template: ${esc(j.meta?.template_id||'')}</span><span class="chip">Trace: ${esc(j.meta?.trace_id||'')}</span></div>`;
   return `${nl}<div class="cards">${answer}${explain}${impact}</div>${meta}`;
 }
-function render(){
-  $stream.innerHTML = messages.map(m=>{
-    const role = m.role==='user'?'user':'assistant';
-    return `<div class="msg ${role}"><div class="bubble">${role==='user'?'<div class="role">You</div>':'<div class="role">Your AI Employee</div>'}${m.html}</div></div>`;
-  }).join('');
-  $stream.scrollTop = $stream.scrollHeight;
-}
-function pushUser(text){ messages.push({role:'user', html:esc(text)}); render(); }
-function pushAssistant(j){ messages.push({role:'assistant', html:assistantHTML(j), raw:{meta:j.meta}}); render(); }
 function historyForAPI(){
-  const h=[]; for(const m of messages){ if(m.role==='user') h.push({role:'user',text:m.html.replace(/<[^>]+>/g,'')}); if(m.role==='assistant'&&m.raw?.meta){ h.push({role:'assistant',intent:m.raw.meta.intent,entities:m.raw.entities||{}}); } }
+  const h=[]; // Only text-mode history is sent (voice modes are demo-only)
+  for(const m of messages){
+    if(m.role==='user') h.push({role:'user',text:m.html.replace(/<[^>]+>/g,'')});
+    if(m.role==='assistant'&&m.raw?.meta) h.push({role:'assistant',intent:m.raw.meta.intent,entities:m.raw.entities||{}});
+  }
   return h.slice(-12);
 }
-
-/* ================== API helper ================== */
 async function askAPI(text){
   let kb={}; try{ kb=JSON.parse($kbText.value);}catch{}
   const r = await fetch('/api/demoAgent',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({utterance:text,kb, demo:true, history:historyForAPI()})});
@@ -201,16 +204,38 @@ async function askAPI(text){
   return r.json();
 }
 
+/* ================== Text-mode rendering ================== */
+function renderText(){
+  $stream.innerHTML = messages.map(m=>{
+    const role = m.role==='user'?'user':'assistant';
+    return `<div class="msg ${role}"><div class="bubble">${role==='user'?'<div class="role">You</div>':'<div class="role">Your AI Employee</div>'}${m.html}</div></div>`;
+  }).join('');
+  $stream.scrollTop = $stream.scrollHeight;
+}
+function pushUser(text){ messages.push({role:'user', html:esc(text)}); renderText(); }
+function pushAssistant(j){ messages.push({role:'assistant', html:assistantHTML(j), raw:{meta:j.meta}}); renderText(); }
+
+/* ================== Voice-Note rendering (separate) ================== */
+function renderVN(){
+  $vnStream.innerHTML = vnMessages.map(m=>{
+    const role = m.role==='user'?'user':'assistant';
+    return `<div class="msg ${role}"><div class="bubble">${role==='user'?'<div class="role">You (voice note)</div>':'<div class="role">Your AI Employee</div>'}${m.html}</div></div>`;
+  }).join('');
+  $vnStream.scrollTop = $vnStream.scrollHeight;
+}
+function vnPushUser(text){ vnMessages.push({role:'user', html:esc(text)}); renderVN(); }
+function vnPushAssistant(j){ vnMessages.push({role:'assistant', html:assistantHTML(j)}); renderVN(); }
+
 /* ================== Text mode events ================== */
 function sendText(){
   const t = $prompt.value.trim(); if(!t) return;
   pushUser(t); $prompt.value='';
   askAPI(t).then(pushAssistant).catch(e=>pushAssistant({ nl:`Error: ${esc(String(e.message||e))}`, answer:{format:'text',value:''}, explain:{steps:[]}, impact:{bullets:[]}, meta:{} }));
 }
-$send.addEventListener('click', sendText);
+document.getElementById('send').addEventListener('click', sendText);
 $prompt.addEventListener('keydown', e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendText(); }});
 
-/* ================== Voice Note mode ================== */
+/* ================== Voice Note mode (controls in footer) ================== */
 const $vnRecord = document.getElementById('vnRecord');
 const $vnStop = document.getElementById('vnStop');
 const $vnSend = document.getElementById('vnSend');
@@ -251,13 +276,13 @@ $vnSend?.addEventListener('click', async ()=>{
   const j = await res.json();
   if (!j.ok){ $vnStatus.textContent='Transcription failed'; $vnSend.disabled=false; return; }
   const text = j.text || '';
-  pushUser(`(voice note) ${text}`);
-  askAPI(text).then(pushAssistant);
-  $vnStatus.textContent='Idle'; $vnSend.disabled=false;
+  vnPushUser('(voice note) ' + text);
+  askAPI(text).then(r => { vnPushAssistant(r); $vnStatus.textContent='Idle'; $vnSend.disabled=false; })
+              .catch(() => { vnPushAssistant({ nl:'Sorry, there was an error.', answer:{format:'text',value:''}, explain:{steps:[]}, impact:{bullets:[]}, meta:{} }); $vnStatus.textContent='Idle'; $vnSend.disabled=false; });
 });
 function blobToBase64(blob){ return new Promise((resolve)=>{ const r=new FileReader(); r.onload=()=>resolve(r.result); r.readAsDataURL(blob); }); }
 
-/* ================== Call mode ================== */
+/* ================== Call mode (unchanged hands-free) ================== */
 let audioCtx=null, analyser=null, micSource=null, rafId=null;
 let sr=null, listening=false, speaking=false;
 let selectedVoice = null;
@@ -293,23 +318,38 @@ function startListen(){
   try{ sr.start(); }catch{ setTimeout(startListen, 200); }
 }
 
-/* Enter/leave modes */
+/* ================== Mode switching ================== */
+function enterTextMode(){
+  $stream.style.display='block';
+  $vnStream.style.display='none';
+  $textFooter.style.display='block';
+  $vnFooter.style.display='none';
+  leaveCallMode();
+}
+function enterVoiceNoteMode(){
+  $stream.style.display='none';
+  $vnStream.style.display='block';
+  $textFooter.style.display='none';
+  $vnFooter.style.display='block';
+  leaveCallMode();
+}
 async function enterCallMode(){
-  $stream.style.display='none'; $voiceNoteArea.style.display='none'; $textFooter.style.display='none'; $callArea.style.display='flex';
+  $stream.style.display='none';
+  $vnStream.style.display='none';
+  $textFooter.style.display='none';
+  $vnFooter.style.display='none';
+  $callArea.style.display='flex';
   if(!audioCtx){ try{ await initMic(); }catch{ $callStatus.textContent='Please allow microphone access.'; return; } startViz(); }
   await ensureAudioReady(); if(!selectedVoice) selectedVoice=await pickEnglishVoice(); speak('Listening.');
 }
 function leaveCallMode(){
-  try{ sr && sr.abort(); }catch{} try{ speechSynthesis.cancel(); }catch{}
-  listening=false; speaking=false; $viz.style.transform='scale(1)'; $viz.style.borderColor='#bfe7ff'; $viz.style.boxShadow='0 12px 40px rgba(14,165,233,.18)';
-  $callStatus.textContent="Tell me, how can I help you today?";
   $callArea.style.display='none';
+  try{ sr && sr.abort(); }catch{} try{ speechSynthesis.cancel(); }catch{}
+  listening=false; speaking=false;
+  $viz.style.transform='scale(1)'; $viz.style.borderColor='#bfe7ff'; $viz.style.boxShadow='0 12px 40px rgba(14,165,233,.18)';
+  $callStatus.textContent="Tell me, how can I help you today?";
 }
 
-function enterTextMode(){ $stream.style.display='block'; $voiceNoteArea.style.display='none'; $textFooter.style.display='block'; leaveCallMode(); }
-function enterVoiceNoteMode(){ $stream.style.display='none'; $voiceNoteArea.style.display='block'; $textFooter.style.display='none'; leaveCallMode(); }
-
-/* ================== Mode toggle ================== */
 $modeToggle.addEventListener('click', (e)=>{
   const btn=e.target.closest('button'); if(!btn) return;
   [...$modeToggle.querySelectorAll('button')].forEach(b=>b.classList.remove('active'));
@@ -328,8 +368,8 @@ $kbCancel.addEventListener('click', closeKB);
 $kbSave.addEventListener('click', ()=>{ try{ localStorage.setItem('demo_kb', $kbText.value);}catch{} closeKB(); });
 
 /* ================== Welcome (text mode) ================== */
-messages.push({ role:'assistant', html:`<div>Welcome! Choose <b>Text</b>, leave a <b>Voice Note</b>, or use <b>Call</b> for a hands-free conversation. This demo uses simulated numbers tailored by your Company KB.</div>` });
-render();
+messages.push({ role:'assistant', html:`<div>Welcome! Choose <b>Text</b>, leave a <b>Voice Note</b> (controls at the bottom), or use <b>Call</b> for a hands-free conversation. This demo uses simulated numbers tailored by your Company KB.</div>` });
+renderText();
 </script>
 </body>
 </html>
