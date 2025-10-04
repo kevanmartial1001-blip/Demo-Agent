@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Universal Demo Agent</title>
+<style>
+  body{margin:0;background:#0b0c10;color:#e9edf1;font:16px/1.5 system-ui,Segoe UI,Inter,Arial}
+  .wrap{max-width:860px;margin:40px auto;padding:0 20px}
+  .card{background:#141824;border:1px solid #232735;border-radius:14px;padding:18px;margin:14px 0}
+  .muted{color:#9aa6b2}
+  input,button,textarea{font:inherit}
+  .row{display:flex;gap:10px}
+  .grow{flex:1}
+  table{width:100%;border-collapse:collapse;margin-top:8px}
+  th,td{border:1px solid #232735;padding:8px;text-align:left}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Universal Demo Agent</h1>
+    <p class="muted">Type anything (inventory, revenue last week, vacations for a team…). Responses are simulated but personalized via your KB.</p>
+
+    <div class="card">
+      <div class="row">
+        <input id="utterance" class="grow" placeholder="Ask: How much inventory for Ultra Hoodie?" />
+        <button id="ask">Ask</button>
+      </div>
+      <details style="margin-top:10px">
+        <summary class="muted">Company KB (editable)</summary>
+        <textarea id="kb" style="width:100%;height:140px;margin-top:8px">{
+  "company_id": "acme-123",
+  "company_name": "ACME Retail Group",
+  "sector": "Retail",
+  "primary_region": "Marbella",
+  "example_top_product": "Ultra Hoodie",
+  "example_top_region": "Andalucía",
+  "example_employee_1": "C. Alvarez",
+  "example_employee_2": "M. Duarte",
+  "example_employee_3": "S. Ruiz"
+}</textarea>
+      </details>
+    </div>
+
+    <div id="out"></div>
+  </div>
+
+<script>
+async function ask() {
+  const btn = document.getElementById('ask');
+  const utterance = document.getElementById('utterance').value.trim();
+  const kbText = document.getElementById('kb').value;
+  let kb = {};
+  try { kb = JSON.parse(kbText); } catch (e) {}
+
+  if (!utterance) return;
+
+  btn.disabled = true; btn.textContent = 'Thinking…';
+  const res = await fetch('/api/demoAgent', {
+    method: 'POST',
+    headers: { 'Content-Type':'application/json' },
+    body: JSON.stringify({ utterance, kb, demo: true })
+  }).catch(e => ({ ok:false, error:String(e) }));
+
+  const out = document.getElementById('out');
+  const wrap = document.createElement('div');
+
+  if (!res || !res.ok) {
+    wrap.innerHTML = `<div class="card">Request failed. ${res?.status||''}</div>`;
+    out.prepend(wrap);
+    btn.disabled = false; btn.textContent = 'Ask';
+    return;
+  }
+
+  const json = await res.json();
+
+  function tableHTML(t) {
+    if (!t || !t.columns || !t.rows) return '';
+    let h = '<table><thead><tr>';
+    for (const c of t.columns) h += `<th>${c}</th>`;
+    h += '</tr></thead><tbody>';
+    for (const r of t.rows) {
+      h += '<tr>' + r.map(v => `<td>${v}</td>`).join('') + '</tr>';
+    }
+    h += '</tbody></table>';
+    return h;
+  }
+
+  const answerBlock = (() => {
+    if (json.answer?.format === 'table') {
+      return `<div class="card">
+        <h3>Answer</h3>
+        <div class="muted">${json.answer.summary||''}</div>
+        ${tableHTML(json.answer.value)}
+      </div>`;
+    }
+    return `<div class="card"><h3>Answer</h3><div>${json.answer?.value||''}</div></div>`;
+  })();
+
+  const explainList = (json.explain?.steps||[]).map(s => `<li>${s}</li>`).join('');
+  const explainBlock = `<div class="card"><h3>How it worked</h3><ol>${explainList}</ol></div>`;
+
+  const impactList = (json.impact?.bullets||[]).map(s => `<li>${s}</li>`).join('');
+  const ctas = (json.impact?.ctas||[]).map(c => `<button>${c.label}</button>`).join(' ');
+  const impactBlock = `<div class="card"><h3>Why it matters</h3><ul>${impactList}</ul><div>${ctas}</div></div>`;
+
+  const metaBlock = `<div class="card muted">
+    Intent: <b>${json.meta?.intent}</b> &nbsp; • &nbsp; Template: ${json.meta?.template_id} &nbsp; • &nbsp; Trace: ${json.meta?.trace_id}
+  </div>`;
+
+  wrap.innerHTML = answerBlock + explainBlock + impactBlock + metaBlock;
+  out.prepend(wrap);
+
+  btn.disabled = false; btn.textContent = 'Ask';
+}
+
+document.getElementById('ask').addEventListener('click', ask);
+document.getElementById('utterance').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') ask();
+});
+</script>
+</body>
+</html>
