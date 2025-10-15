@@ -1,11 +1,15 @@
 // /api/demoAgent.js
 // Human-like, action-first demo assistant with multi-bubble script & follow-ups.
+// NOW: KB-aware ChatGPT-style answers when OPENAI_API_KEY + kb_json are provided.
 
 module.exports.config = { runtime: "nodejs18.x" };
 
+const MAX_JSON_CHARS = 120000;
+const MODEL = process.env.OPENAI_AGENT_MODEL || "gpt-4o-mini";
+
 const trace = () => "demo_" + Math.random().toString(36).slice(2, 10);
 
-// --- Demo data builders -------------------------------------------------------
+// --- Demo data builders (fallback) -------------------------------------------
 const mkTable = (columns, rows) => ({ format:"table", summary:"Demo numbers (connect for live data).", value:{ columns, rows }});
 function buildAnswer(topic, kb){
   switch(topic){
@@ -32,7 +36,6 @@ function buildAnswer(topic, kb){
       return { format:"text", value:"Once connected, I’d pull this live and complete the task automatically." };
   }
 }
-
 function textFromAnswer(a){
   if (a?.format === "table") {
     const { columns, rows } = a.value;
@@ -55,7 +58,6 @@ function detect(utterance=""){
   const wantsHR      = /\bvacation|pto|holiday|vacaciones/.test(u);
   const wantsInvoice = /\binvoice|bill|factura/.test(u);
 
-  // hard actions:
   if ((wantsSend && (wantsEmail||wantsWA)) || wantsEmail || wantsWA)
     return { intent: wantsWA ? "send_whatsapp" : "send_email", topic:
       (wantsInv&&"inventory")||(wantsHR&&"hr")||(wantsRevenue&&"revenue")||(wantsReport&&"report")||"generic" };
@@ -63,7 +65,6 @@ function detect(utterance=""){
   if (wantsCall)     return { intent:"place_call", topic:"generic" };
   if (wantsInvoice)  return { intent:"create_invoice", topic:"billing" };
 
-  // info lookups:
   if (wantsInv)      return { intent:"inventory_lookup", topic:"inventory" };
   if (wantsHR)       return { intent:"hr_schedule", topic:"hr" };
   if (wantsRevenue||wantsReport) return { intent:"sales_report", topic:"revenue" };
@@ -81,33 +82,98 @@ async function postJSON(baseUrl, path, payload){
   return j;
 }
 
+// --- LLM (KB-aware) -----------------------------------------------------------
+function briefFromKB(kb) {
+  if (!kb || typeof kb !== "object") return "No KB loaded.";
+  const meta = kb.meta || {};
+  const co = meta.company || {};
+  const sections = kb.sections || {};
+  const counts = Object.fromEntries(Object.entries(sections).map(([k,v]) => [k, Array.isArray(v)? v.length:0]));
+  const lines = [
+    `Company: ${co.name || "unknown"} (${co.domain || "unknown"})`,
+    `Homepage: ${co.homepage_url || "unknown"}`,
+    `KB version: ${meta.kb_version || "unknown"}`,
+    `Sections: ${Object.entries(counts).map(([k,n]) => `${k}(${n})`).join(", ") || "none"}`
+  ];
+  return lines.join("\n");
+}
+async function kbAnswerWithLLM({ kb_json, company_system_prompt, user, history=[], mode="text" }) {
+  if (!process.env.OPENAI_API_KEY) return null;
+  if (!kb_json || !company_system_prompt) return null;
+
+  const kbRaw = JSON.stringify(kb_json);
+  const kbTrunc = kbRaw.length > MAX_JSON_CHARS ? (kbRaw.slice(0, MAX_JSON_CHARS) + "\n/*[truncated]*/") : kbRaw;
+  const kbBrief = briefFromKB(kb_json);
+
+  const histMsgs = (Array.isArray(history)? history:[]).slice(-10).map(h=>{
+    if (h.role === "user") return { role:"user", content:h.text || "" };
+    if (h.role === "assistant") return { role:"assistant", content:"OK." };
+    return null;
+  }).filter(Boolean);
+
+  const messages = [
+    { role:"system", content: String(company_system_prompt) },
+    { role:"system", content: "KB_BRIEF:\n" + kbBrief },
+    { role:"system", content: "KB_JSON:\n" + kbTrunc },
+    ...histMsgs,
+    { role:"user", content: `User mode: ${mode}\n\n${user}` },
+    { role:"system", content: "Rules: Use ONLY KB evidence where possible; if missing, state a careful inference with confidence (high/medium/low). Keep answers concise and practical. Cite section keys / URLs used." }
+  ];
+
+  const r = await fetch("https://api.openai.com/v1/chat/completions",{
+    method:"POST",
+    headers:{ "Authorization":`Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type":"application/json" },
+    body: JSON.stringify({ model: MODEL, temperature: 0.2, messages })
+  });
+  if (!r.ok) return null;
+  const j = await r.json().catch(()=>null);
+  const text = j?.choices?.[0]?.message?.content?.trim();
+  if (!text) return null;
+  return text;
+}
+
 // --- Main handler -------------------------------------------------------------
 module.exports = async (req, res) => {
   if (req.method !== "POST") return res.status(405).json({ ok:false, error:"Method Not Allowed" });
 
   try{
     const body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body||{});
-    const { utterance="", kb={}, client={}, mode="text", response_to } = body;
+    const {
+      utterance="", kb={}, client={}, mode="text", response_to,
+      // NEW: passed by DemoChat.html
+      kb_json = null, company_system_prompt = null, history = []
+    } = body;
 
-    // client contact resolution (footer → KB demo_client fallback)
+    // client contact resolution
     const phone = (client.phone || kb?.demo_client?.phone || "").trim();
     const email = (client.email || kb?.demo_client?.email || "").trim();
 
     const { intent, topic } = detect(utterance);
-    const answer = buildAnswer(topic, kb);
 
+    // Try LLM first if KB + system prompt are present
+    let llmText = null;
+    try {
+      llmText = await kbAnswerWithLLM({ kb_json, company_system_prompt, user: utterance, history, mode });
+    } catch (_) { /* swallow and fallback */ }
+
+    // If LLM produced an answer, return a chat-style script immediately
+    if (llmText) {
+      return res.status(200).json({
+        mode,
+        script: [{ text: llmText }],
+        cards: [],
+        meta: { intent: "kb_answer", topic, trace_id: trace(), used_llm: true }
+      });
+    }
+
+    // ---- FALLBACK to your original deterministic demo flows ----
+    const answer = buildAnswer(topic, kb);
     const proto = req.headers["x-forwarded-proto"] || "https";
     const baseUrl = `${proto}://${req.headers.host}`;
 
-    // A "script" is a list of short bubbles we play in order (with delays client-side).
     const script = [];
-    const cards  = []; // optional card to show the data (not in call mode)
-    const follow = null; // place-holder
-
-    // Helper to narrate like a human operator
+    const cards  = [];
     const say = (text, delay=0) => script.push({ text, delay_ms: delay });
-
-    // --- Flows ----------------------------------------------------------------
 
     if (intent === "inventory_lookup") {
       say("Sure — opening Inventory → Stock Check…", 0);
@@ -127,8 +193,7 @@ module.exports = async (req, res) => {
       cards.push(answer);
 
     } else if (intent === "create_invoice") {
-      // 2-step follow-up: ask where to deliver it
-      const ctx = trace(); // context id for this question
+      const ctx = trace();
       say("Absolutely — I’ll prepare the invoice for Mr. Martin.", 0);
       say("I’ll grab recent work items and fill the template.", 700);
       say("Where should I send it?", 600);
@@ -148,7 +213,7 @@ module.exports = async (req, res) => {
       });
     }
 
-    // Deliver actions (explicit “send me by …”)
+    // Deliver actions
     let performed = null;
     try{
       if (intent === "send_email") {
@@ -183,15 +248,12 @@ module.exports = async (req, res) => {
       performed = { ok:false, error:String(e.message||e) };
     }
 
-    // Compose response
     const response = {
       mode,
-      // In call mode, we speak only the script (no cards). In text/vn, show cards.
       script: script.length ? script : [{ text:"Here’s what I found.", delay_ms:0 }],
       cards:  (mode==="call") ? [] : (cards.length ? cards : [answer]),
-      meta: { intent, topic, trace_id: trace(), performed }
+      meta: { intent, topic, trace_id: trace(), performed, used_llm: false }
     };
-
     return res.status(200).json(response);
 
   } catch (e) {
