@@ -99,7 +99,7 @@
 <body>
 <div class="app">
   <header>
-    <h1>Your AI Employee</h1>
+    <h1 id="companyTitle">Your AI Employee</h1>
     <div class="toggle" id="modeToggle">
       <button type="button" data-mode="text" class="active">Text</button>
       <button type="button" data-mode="voicenote">Voice Note</button>
@@ -181,6 +181,33 @@
 </div>
 
 <script>
+/* ====== Tenant KB loader (added) ====== */
+window.__KB__ = null;
+window.__SYS_PROMPT__ = null;
+(async () => {
+  try {
+    const qs = new URLSearchParams(location.search);
+    const tenant = qs.get('tenant');
+    const token  = qs.get('token');
+    if (!tenant || !token) return; // no personalization; UI still works
+
+    const r = await fetch(`/api/tenantGet?tenant=${encodeURIComponent(tenant)}&token=${encodeURIComponent(token)}`);
+    const j = await r.json();
+    if (!j.ok) { console.warn('Tenant fetch failed:', j.error); return; }
+
+    window.__KB__ = j.tenant.kb_json || null;
+    window.__SYS_PROMPT__ = j.tenant.company_system_prompt || null;
+
+    const name = j.tenant.company_name || j.tenant.company_id || 'Your AI Employee';
+    const ver  = j.tenant.kb_version ? ` (v${j.tenant.kb_version})` : '';
+    const h1 = document.getElementById('companyTitle');
+    if (h1) h1.textContent = `AI Assistant — ${name}${ver}`;
+    try { document.title = `AI Assistant — ${name}${ver}`; } catch {}
+  } catch (e) {
+    console.warn('KB bootstrap error:', e);
+  }
+})();
+
 /* ====== Elements & state ====== */
 let messages = [];       // Text mode
 let vnMessages = [];     // Voice Note mode
@@ -254,38 +281,32 @@ async function showStatusSequence(targetStreamEl){
   const rows = [...wrap.querySelectorAll('.statusRow')];
   for (let i=0;i<rows.length;i++){
     rows.forEach((r,idx)=>{ r.classList.toggle('active', idx===i); r.classList.toggle('done', idx<i); });
-    await new Promise(r=>setTimeout(r, 900 + i*500)); // 0.9s, 1.4s, 1.9s
+    await new Promise(r=>setTimeout(r, 900 + i*500));
   }
   rows.forEach(r=>r.classList.remove('active'));
   rows.forEach(r=>r.classList.add('done'));
-  // fade out after short pause
   await new Promise(r=>setTimeout(r, 400));
   wrap.style.transition='opacity .35s ease';
   wrap.style.opacity='0';
   setTimeout(()=>wrap.remove(), 400);
 }
 
-/* ====== Shared renderer to show final answer (ignores step-by-step narration) ====== */
+/* ====== Shared renderer ====== */
 async function renderFinalAnswer(resp, targetStreamEl, targetMessages){
   const { script = [], cards = [], meta = {} } = resp;
-
-  // 1) status sequence (progress-like)
   await showStatusSequence(targetStreamEl);
 
-  // 2) typing pause
   const lastText = (script.length ? (script[script.length-1].text||'') : '');
   const removeTyping = showTyping(targetStreamEl);
   const delay = (script.length ? humanDelayFor(lastText) : 2200);
   await new Promise(r=>setTimeout(r, delay));
   removeTyping();
 
-  // 3) final short line (optional)
   if (lastText && lastText.trim()){
     targetMessages.push({ role:'assistant', html: esc(lastText), raw:{ meta } });
     if (targetStreamEl === $stream) renderText(); else renderVN();
   }
 
-  // 4) cards with the data
   if (cards && cards.length){
     const htmlCards = cards.map(c => {
       if (c.format === 'table') {
@@ -299,7 +320,7 @@ async function renderFinalAnswer(resp, targetStreamEl, targetMessages){
   }
 }
 
-/* ====== Ask (follow-ups with buttons) – unchanged shape, works if backend returns `ask` ====== */
+/* ====== Ask UI ====== */
 function renderAsk(askObj){
   if (!askObj) return;
   const wrap = document.createElement('div');
@@ -318,7 +339,8 @@ function renderAsk(askObj){
       const client = { phone: getPhone(), email: getEmail() };
       const r = await fetch('/api/demoAgent',{
         method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ utterance: `deliver via ${choice}`, client })
+        body: JSON.stringify({ utterance: `deliver via ${choice}`, client,
+          kb_json: window.__KB__, company_system_prompt: window.__SYS_PROMPT__ })
       });
       const resp = await r.json();
       await renderFinalAnswer(resp, $stream, messages);
@@ -346,7 +368,11 @@ async function askAPI(text){
   const r = await fetch('/api/demoAgent',{
     method:'POST',
     headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ utterance:text, demo:true, history:historyForAPI(), client, mode })
+    body: JSON.stringify({
+      utterance:text, demo:true, history:historyForAPI(), client, mode,
+      // pass-through (non-breaking) — backend can ignore if not needed
+      kb_json: window.__KB__, company_system_prompt: window.__SYS_PROMPT__
+    })
   });
   if(!r.ok) throw new Error('HTTP '+r.status);
   return r.json();
@@ -380,7 +406,7 @@ function sendText(){
 $send.addEventListener('click', sendText);
 $prompt.addEventListener('keydown', e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendText(); }});
 
-/* ====== Voice Note (Record / Send) ====== */
+/* ====== Voice Note ====== */
 let vnMediaRec=null, vnChunks=[], vnBlob=null, vnMime=null, vnDurationSec=0, vnStartAt=0, vnStreamLive=null;
 function renderVN(){
   $vnStream.innerHTML = vnMessages.map(m=>{
@@ -444,7 +470,7 @@ document.getElementById('vnSend').addEventListener('click', async ()=>{
 });
 function blobToBase64(blob){ return new Promise((resolve)=>{ const r=new FileReader(); r.onload=()=>resolve(r.result); r.readAsDataURL(blob); }); }
 
-/* ====== Call mode (fallback SR/TTS + noise gate viz) ====== */
+/* ====== Call mode (fallback SR/TTS + viz) ====== */
 let sr=null, speaking=false, listening=false, gateThresh=0.02;
 function sttAvailable(){ return !!(window.SpeechRecognition || window.webkitSpeechRecognition); }
 let audioCtx=null, analyser=null, rafId=null;
@@ -495,18 +521,13 @@ function startListenFallback(){
   sr=new SR(); sr.lang='en-US'; sr.interimResults=true; sr.continuous=true;
   listening=true; $callStatus.textContent="Tell me, how can I help you today?";
   let final='';
-  sr.onresult=(e)=>{ for(let i=e.resultIndex;i<e.results.length;i++){ const r=e.results[i]; if(r.isFinal){ final=r[0].transcript.trim(); if(final){ try{ sr.abort(); }catch{} listening=false; $callStatus.textContent='…'; askAPI(final).then(resp=>{ // speak only final
-        (async ()=>{
-          await showStatusSequence($callArea); // reuse same visual rhythm
-          await speakFallback((resp?.script?.at(-1)?.text)||'Here is your update.');
-        })();
-      }); }}} };
+  sr.onresult=(e)=>{ for(let i=e.resultIndex;i<e.results.length;i++){ const r=e.results[i]; if(r.isFinal){ final=r[0].transcript.trim(); if(final){ try{ sr.abort(); }catch{} listening=false; $callStatus.textContent='…'; askAPI(final).then(resp=>{ (async ()=>{ await showStatusSequence($callArea); await speakFallback((resp?.script?.at(-1)?.text)||'Here is your update.'); })(); }); }}} };
   sr.onerror=()=>{ listening=false; setTimeout(startListenFallback,250); };
   sr.onend=()=>{ if(!speaking) setTimeout(startListenFallback,120); };
   try{ sr.start(); }catch{ setTimeout(startListenFallback,200); }
 }
 
-/* ====== Mode switching (clicks fixed) ====== */
+/* ====== Mode switching ====== */
 function enterTextMode(){
   $stream.style.display='block'; $vnStream.style.display='none';
   $textFooter.style.display='block'; $vnFooter.style.display='none';
@@ -572,7 +593,7 @@ $testEmail.addEventListener('click', async ()=>{
   const j = await r.json(); alert(j.ok ? 'Email sent ✓' : ('Email error: ' + j.error));
 });
 
-/* ====== Welcome (centered) ====== */
+/* ====== Welcome ====== */
 function ensureWelcome(){
   if (firstUserMessageSent) $welcome.style.display='none';
   else $welcome.style.display='flex';
