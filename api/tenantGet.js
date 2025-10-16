@@ -1,12 +1,9 @@
 // api/tenantGet.js
 // Returns the stored tenant (KB, prompt, etc.) for UI grounding.
-// DEV build: token validated by format + expiry + tenant match (signature ignored).
+// DEV token check: validate format <tenant>.<exp>.<sig>, tenant match, and non-expired. (Signature ignored.)
 
-module.exports.config = { runtime: "nodejs20.x" }; // <-- Force Node runtime so ./_lib/sheets works
+module.exports.config = { runtime: "nodejs20.x" };
 
-const { openTenantsSheet } = require('./_lib/sheets');
-
-// Simple dev validator: "<tenant>.<exp>.<sig>" with exp in the future, tenant must match.
 function verifyDev({ token, tenant }) {
   if (!token || !tenant) return false;
   const parts = String(token).split('.');
@@ -20,7 +17,8 @@ function verifyDev({ token, tenant }) {
 
 module.exports = async (req, res) => {
   if (req.method !== 'GET') {
-    res.status(405).json({ ok:false, error:'GET only' }); return;
+    res.status(405).json({ ok:false, error:'GET only' });
+    return;
   }
 
   try {
@@ -29,27 +27,38 @@ module.exports = async (req, res) => {
     const token  = q.token  || '';
 
     if (!verifyDev({ token, tenant })) {
-      res.status(401).json({ ok:false, error:'invalid token' }); return;
+      res.status(401).json({ ok:false, error:'invalid token' });
+      return;
     }
 
-    // Open sheet
+    // Lazy-load the Sheets helper so module load errors are visible as JSON
+    let openTenantsSheet;
+    try {
+      ({ openTenantsSheet } = require('./_lib/sheets'));
+    } catch (e) {
+      res.status(500).json({ ok:false, error:'sheets_module_load_failed', detail:String(e?.message || e) });
+      return;
+    }
+
     let sheet;
     try {
       sheet = await openTenantsSheet();
     } catch (e) {
-      res.status(500).json({ ok:false, error:'sheet_open_failed', detail: String(e?.message || e) }); return;
+      res.status(500).json({ ok:false, error:'sheet_open_failed', detail: String(e?.message || e) });
+      return;
     }
 
-    // Query by tenant_id
     let rows;
     try {
       rows = await sheet.getRows({ query: `tenant_id = "${tenant}"` });
     } catch (e) {
-      res.status(500).json({ ok:false, error:'sheet_query_failed', detail: String(e?.message || e) }); return;
+      res.status(500).json({ ok:false, error:'sheet_query_failed', detail: String(e?.message || e) });
+      return;
     }
 
     if (!rows || !rows.length) {
-      res.status(404).json({ ok:false, error:'not_found' }); return;
+      res.status(404).json({ ok:false, error:'not_found' });
+      return;
     }
 
     const r = rows[0];
