@@ -1,31 +1,25 @@
 // /api/demoAgent.js
 // Human-like demo assistant. If OPENAI_API_KEY + kb_json/company_system_prompt are present
 // (either via tenant+token or direct in body), it returns KB-grounded ChatGPT-style answers.
-
-module.exports.config = { runtime: "nodejs20.x" };
+//
+// DEV build: no crypto; token is validated by format + expiry + tenant match (signature ignored).
 
 const { openTenantsSheet } = require('./_lib/sheets');
-const crypto = require('node:crypto');
 
 const MAX_JSON_CHARS = 120000;
 const MODEL = process.env.OPENAI_AGENT_MODEL || "gpt-4o-mini";
 const trace = () => "demo_" + Math.random().toString(36).slice(2, 10);
 
-// --- Token verify -------------------------------------------------------------
-function verifyToken(token) {
-  if (!token) return null;
+// --- Dev token verifier (no crypto) ------------------------------------------
+function verifyDevToken({ token, tenant }) {
+  if (!token || !tenant) return false;
   const parts = String(token).split('.');
-  if (parts.length !== 3) return null;
-  const [tenant, expStr, sig] = parts;
+  if (parts.length !== 3) return false;
+  const [tFromToken, expStr/*, sig*/] = parts;
   const exp = parseInt(expStr, 10);
-  if (!tenant || Number.isNaN(exp) || exp < Math.floor(Date.now()/1000)) return null;
-
-  // Dev-safe: if DEMO_SECRET missing, accept token (testing only)
-  if (!process.env.DEMO_SECRET) return tenant;
-
-  const raw = `${tenant}.${exp}.${process.env.DEMO_SECRET}`;
-  const chk = crypto.createHash('sha256').update(raw).digest('base64url');
-  return chk === sig ? tenant : null;
+  if (!tFromToken || tFromToken !== tenant) return false;
+  if (!Number.isFinite(exp) || exp < Math.floor(Date.now()/1000)) return false;
+  return true;
 }
 
 // --- Tenant loader ------------------------------------------------------------
@@ -38,7 +32,7 @@ async function loadTenantById(tenant_id) {
   try { rows = await sheet.getRows({ query: `tenant_id = "${tenant_id}"` }); }
   catch (e) { throw new Error('sheet_query_failed: ' + String(e?.message || e)); }
 
-  if (!rows.length) return null;
+  if (!rows || !rows.length) return null;
 
   const r = rows[0];
   const safeParse = (s, fb) => { try { return s ? JSON.parse(s) : fb; } catch { return fb; } };
@@ -177,7 +171,10 @@ async function kbAnswerWithLLM({ kb_json, company_system_prompt, user, history=[
 
 // --- Main handler -------------------------------------------------------------
 module.exports = async (req, res) => {
-  if (req.method !== "POST") return res.status(405).json({ ok:false, error:"Method Not Allowed" });
+  if (req.method !== "POST") {
+    res.status(405).json({ ok:false, error:"Method Not Allowed" });
+    return;
+  }
 
   try{
     const body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body||{});
@@ -187,12 +184,17 @@ module.exports = async (req, res) => {
       tenant = null, token = null
     } = body;
 
-    // If tenant+token provided, load KB from store
+    // If tenant+token provided, load KB from store (dev verifier)
     if (tenant && token) {
-      const verified = verifyToken(token);
-      if (verified !== tenant) return res.status(401).json({ ok:false, error:"invalid token" });
+      if (!verifyDevToken({ token, tenant })) {
+        res.status(401).json({ ok:false, error:"invalid token" });
+        return;
+      }
       const t = await loadTenantById(tenant);
-      if (!t) return res.status(404).json({ ok:false, error:"tenant not found" });
+      if (!t) {
+        res.status(404).json({ ok:false, error:"tenant not found" });
+        return;
+      }
       // Prefer explicit body values, but fill from tenant if missing
       company_system_prompt = company_system_prompt || t.company_system_prompt || null;
       kb_json = kb_json || t.kb_json || null;
@@ -212,12 +214,13 @@ module.exports = async (req, res) => {
 
     // If LLM produced an answer, return a chat-style script immediately
     if (llmText) {
-      return res.status(200).json({
+      res.status(200).json({
         mode,
         script: [{ text: llmText }],
         cards: [],
         meta: { intent: "kb_answer", topic, trace_id: trace(), used_llm: true }
       });
+      return;
     }
 
     // ---- FALLBACK demo flows ----
@@ -251,7 +254,7 @@ module.exports = async (req, res) => {
       say("Absolutely — I’ll prepare the invoice for Mr. Martin.", 0);
       say("I’ll grab recent work items and fill the template.", 700);
       say("Where should I send it?", 600);
-      return res.status(200).json({
+      res.status(200).json({
         mode,
         script,
         ask: {
@@ -265,6 +268,7 @@ module.exports = async (req, res) => {
         },
         meta: { intent, topic, trace_id: ctx }
       });
+      return;
     }
 
     // Deliver actions
@@ -302,17 +306,16 @@ module.exports = async (req, res) => {
       performed = { ok:false, error:String(e.message||e) };
     }
 
-    const response = {
+    res.status(200).json({
       mode,
       script: script.length ? script : [{ text:"Here’s what I found.", delay_ms:0 }],
       cards:  (mode==="call") ? [] : (cards.length ? cards : [answer]),
       meta: { intent, topic, trace_id: trace(), performed, used_llm: false }
-    };
-    return res.status(200).json(response);
+    });
 
   } catch (e) {
     console.error('demoAgent crash:', e);
-    return res.status(500).json({ ok:false, error:'server_error', detail:String(e?.message || e) });
+    res.status(500).json({ ok:false, error:'server_error', detail:String(e?.message || e) });
   }
 };
 
