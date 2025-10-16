@@ -1,5 +1,6 @@
 // /api/tenantUpsert.js
-// CommonJS + Vercel "nodejs" runtime
+// CommonJS + Vercel "nodejs" runtime (kept)
+// Adds: kb_json serialization + real UPSERT by tenant_id + preserve created_at
 
 module.exports.config = { runtime: "nodejs" };
 
@@ -23,9 +24,7 @@ function serviceAuth() {
     e.code = 500;
     throw e;
   }
-  // Vercel stores multiline secrets with literal \n
-  key = key.replace(/\\n/g, "\n");
-
+  key = key.replace(/\\n/g, "\n"); // Vercel literal \n handling
   return new google.auth.JWT({
     email,
     key,
@@ -45,6 +44,7 @@ async function getSheets() {
   return { sheets, spreadsheetId };
 }
 
+// NOTE: add kb_json between kb_sources_json and company_system_prompt
 const EXPECTED_HEADERS = [
   "tenant_id",
   "company_id",
@@ -54,17 +54,19 @@ const EXPECTED_HEADERS = [
   "kb_version",
   "demo_url",
   "kb_sources_json",
+  "kb_json",
   "company_system_prompt",
-  // optional timestamps; filled iff present
   "created_at",
   "updated_at",
 ];
 
+// 1-based col number -> A1
+function colToA1(n){ let s=''; while(n>0){ const m=(n-1)%26; s=String.fromCharCode(65+m)+s; n=Math.floor((n-1)/26);} return s; }
+
 async function ensureHeaderRow(sheets, spreadsheetId, sheetTitle = "Tenants") {
-  // Use first sheet if exists; else fallback to named range
+  // Use first sheet if exists; else fallback to provided title
   const meta = await sheets.spreadsheets.get({ spreadsheetId });
-  const firstTitle =
-    meta?.data?.sheets?.[0]?.properties?.title || sheetTitle;
+  const firstTitle = meta?.data?.sheets?.[0]?.properties?.title || sheetTitle;
   const title = firstTitle;
 
   const read = await sheets.spreadsheets.values.get({
@@ -81,9 +83,7 @@ async function ensureHeaderRow(sheets, spreadsheetId, sheetTitle = "Tenants") {
   if (needsRewrite) {
     await sheets.spreadsheets.values.update({
       spreadsheetId,
-      range: `${title}!A1:${String.fromCharCode(
-        65 + EXPECTED_HEADERS.length - 1
-      )}1`,
+      range: `${title}!A1:${colToA1(EXPECTED_HEADERS.length)}1`,
       valueInputOption: "RAW",
       requestBody: { values: [EXPECTED_HEADERS] },
     });
@@ -92,7 +92,24 @@ async function ensureHeaderRow(sheets, spreadsheetId, sheetTitle = "Tenants") {
   return title;
 }
 
-function makeRow(body, headers) {
+function serializeKbJson(kb_json) {
+  try {
+    if (kb_json == null) return "";
+    if (typeof kb_json === "string") {
+      // accept pre-stringified JSON; ensure it's at least object-ish
+      const trimmed = kb_json.trim();
+      if (trimmed.startsWith("{") || trimmed.startsWith("[")) return trimmed;
+      // otherwise wrap as a string field
+      return JSON.stringify({ value: kb_json });
+    }
+    // object/array
+    return JSON.stringify(kb_json);
+  } catch {
+    return "";
+  }
+}
+
+function makeRow(body, headers, { preserveCreatedAt } = {}) {
   const now = new Date().toISOString();
   const index = new Map(headers.map((h, i) => [h, i]));
   const row = new Array(headers.length).fill("");
@@ -109,13 +126,55 @@ function makeRow(body, headers) {
   set("homepage_url", body.homepage_url || "");
   set("kb_version", body.kb_version || "");
   set("demo_url", body.demo_url || "");
+
+  // accept kb_sources (array) -> kb_sources_json
+  if (!body.kb_sources_json && Array.isArray(body.kb_sources)) {
+    try {
+      body.kb_sources_json = JSON.stringify(
+        body.kb_sources.map((s) => ({
+          host: s.host || s.lane || null,
+          src_url: s.src_url || s.url || null,
+        }))
+      );
+    } catch {}
+  }
   set("kb_sources_json", body.kb_sources_json || "");
+
+  // NEW: kb_json serialization
+  set("kb_json", serializeKbJson(body.kb_json));
+
   set("company_system_prompt", body.company_system_prompt || "");
 
-  if (index.has("created_at") && !body.created_at) set("created_at", now);
+  if (index.has("created_at")) {
+    if (preserveCreatedAt) {
+      set("created_at", preserveCreatedAt);
+    } else {
+      set("created_at", body.created_at || now);
+    }
+  }
   if (index.has("updated_at")) set("updated_at", now);
 
   return row;
+}
+
+async function findRowIndexByTenantId(sheets, spreadsheetId, title, headers, tenant_id) {
+  const endCol = colToA1(headers.length);
+  const resp = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `${title}!A2:${endCol}`,
+    valueRenderOption: "UNFORMATTED_VALUE",
+  });
+  const rows = resp.data.values || [];
+  const idxTenant = headers.indexOf("tenant_id");
+  if (idxTenant < 0) return { rowIndex: null, existingRow: null };
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i] || [];
+    if (String(row[idxTenant] || "") === String(tenant_id)) {
+      return { rowIndex: i + 2, existingRow: row }; // +2 because A2 is index 2
+    }
+  }
+  return { rowIndex: null, existingRow: null };
 }
 
 // -------- handler --------
@@ -135,33 +194,49 @@ module.exports = async (req, res) => {
     // minimal required
     assertBody(body, "tenant_id");
 
-    // accept kb_sources as array -> stringify compactly
-    if (!body.kb_sources_json && Array.isArray(body.kb_sources)) {
-      try {
-        body.kb_sources_json = JSON.stringify(
-          body.kb_sources.map((s) => ({
-            host: s.host || s.lane || null,
-            src_url: s.src_url || s.url || null,
-          }))
-        );
-      } catch {}
-    }
-
     const { sheets, spreadsheetId } = await getSheets();
     const title = await ensureHeaderRow(sheets, spreadsheetId);
     const headers = EXPECTED_HEADERS;
+    const endCol = colToA1(headers.length);
 
-    const row = makeRow(body, headers);
-
-    await sheets.spreadsheets.values.append({
+    // Look up existing row by tenant_id
+    const { rowIndex, existingRow } = await findRowIndexByTenantId(
+      sheets,
       spreadsheetId,
-      range: `${title}!A1:A1`,
-      valueInputOption: "RAW",
-      insertDataOption: "INSERT_ROWS",
-      requestBody: { values: [row] },
-    });
+      title,
+      headers,
+      body.tenant_id
+    );
 
-    return res.status(200).json({ ok: true, tenant_id: body.tenant_id });
+    // Preserve created_at on updates (if present)
+    let preserveCreatedAt = null;
+    if (existingRow) {
+      const idxCreated = headers.indexOf("created_at");
+      if (idxCreated >= 0) preserveCreatedAt = existingRow[idxCreated] || null;
+    }
+
+    const row = makeRow(body, headers, { preserveCreatedAt });
+
+    if (rowIndex) {
+      // UPDATE existing row
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: `${title}!A${rowIndex}:${endCol}${rowIndex}`,
+        valueInputOption: "RAW",
+        requestBody: { values: [row] },
+      });
+    } else {
+      // APPEND new row
+      await sheets.spreadsheets.values.append({
+        spreadsheetId,
+        range: `${title}!A1:${endCol}1`,
+        valueInputOption: "RAW",
+        insertDataOption: "INSERT_ROWS",
+        requestBody: { values: [row] },
+      });
+    }
+
+    return res.status(200).json({ ok: true, tenant_id: String(body.tenant_id) });
   } catch (e) {
     const code = e.code || 500;
     return res.status(code).json({
@@ -170,12 +245,8 @@ module.exports = async (req, res) => {
       hint: (e?.stack || "").split("\n").slice(0, 2).join("\n"),
       needs: {
         SHEET_ID: process.env.SHEET_ID ? "ok" : "missing",
-        GOOGLE_SERVICE_ACCOUNT_EMAIL: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL
-          ? "ok"
-          : "missing",
-        GOOGLE_SERVICE_ACCOUNT_KEY: process.env.GOOGLE_SERVICE_ACCOUNT_KEY
-          ? "ok"
-          : "missing",
+        GOOGLE_SERVICE_ACCOUNT_EMAIL: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL ? "ok" : "missing",
+        GOOGLE_SERVICE_ACCOUNT_KEY: process.env.GOOGLE_SERVICE_ACCOUNT_KEY ? "ok" : "missing",
       },
     });
   }
