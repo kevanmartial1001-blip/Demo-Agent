@@ -1,48 +1,34 @@
 // /api/demoAgent.js
-// Demo assistant that becomes KB-grounded when kb_json + company_system_prompt are present
-// (from tenant+token or passed directly). DEV token check (no crypto).
-
 module.exports.config = { runtime: "nodejs20.x" };
 
 const MAX_JSON_CHARS = 120000;
 const MODEL = process.env.OPENAI_AGENT_MODEL || "gpt-4o-mini";
 const trace = () => "demo_" + Math.random().toString(36).slice(2, 10);
 
-// --- Dev token verifier (no crypto) ------------------------------------------
 function verifyDevToken({ token, tenant }) {
   if (!token || !tenant) return false;
   const parts = String(token).split('.');
   if (parts.length !== 3) return false;
-  const [tFromToken, expStr /*, sig*/] = parts;
+  const [tFromToken, expStr] = parts;
   const exp = parseInt(expStr, 10);
   if (!tFromToken || tFromToken !== tenant) return false;
   if (!Number.isFinite(exp) || exp < Math.floor(Date.now()/1000)) return false;
   return true;
 }
 
-// Lazy-load Sheets module and open it (called only if tenant+token used)
 async function safeOpenTenantsSheet() {
   let openTenantsSheet;
-  try {
-    ({ openTenantsSheet } = require('./_lib/sheets'));
-  } catch (e) {
-    throw new Error('sheets_module_load_failed: ' + String(e?.message || e));
-  }
-  try {
-    return await openTenantsSheet();
-  } catch (e) {
-    throw new Error('sheet_open_failed: ' + String(e?.message || e));
-  }
+  try { ({ openTenantsSheet } = require('./_lib/sheets')); }
+  catch (e) { throw new Error('sheets_module_load_failed: ' + String(e?.message || e)); }
+  try { return await openTenantsSheet(); }
+  catch (e) { throw new Error('sheet_open_failed: ' + String(e?.message || e)); }
 }
 
 async function loadTenantById(tenant_id) {
   const sheet = await safeOpenTenantsSheet();
   let rows;
-  try {
-    rows = await sheet.getRows({ query: `tenant_id = "${tenant_id}"` });
-  } catch (e) {
-    throw new Error('sheet_query_failed: ' + String(e?.message || e));
-  }
+  try { rows = await sheet.getRows({ query: `tenant_id = "${tenant_id}"` }); }
+  catch (e) { throw new Error('sheet_query_failed: ' + String(e?.message || e)); }
   if (!rows || !rows.length) return null;
 
   const r = rows[0];
@@ -57,7 +43,6 @@ async function loadTenantById(tenant_id) {
   };
 }
 
-// --- Demo data builders (fallback) -------------------------------------------
 const mkTable = (columns, rows) => ({ format:"table", summary:"Demo numbers (connect for live data).", value:{ columns, rows }});
 function buildAnswer(topic, kb){
   switch(topic){
@@ -92,7 +77,6 @@ function textFromAnswer(a){
   return a?.value || "";
 }
 
-// --- Intent detection ---------------------------------------------------------
 function detect(utterance=""){
   const u = utterance.toLowerCase();
   const wantsEmail   = /email|mail|correo/.test(u);
@@ -120,7 +104,6 @@ function detect(utterance=""){
   return { intent:"generic_question", topic:"generic" };
 }
 
-// --- Utility ------------------------------------------------------------------
 async function postJSON(baseUrl, path, payload){
   const r = await fetch(`${baseUrl}${path}`,{
     method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify(payload)
@@ -130,7 +113,6 @@ async function postJSON(baseUrl, path, payload){
   return j;
 }
 
-// --- LLM (KB-aware) -----------------------------------------------------------
 function briefFromKB(kb) {
   if (!kb || typeof kb !== "object") return "No KB loaded.";
   const meta = kb.meta || {};
@@ -145,6 +127,7 @@ function briefFromKB(kb) {
   ];
   return lines.join("\n");
 }
+
 async function kbAnswerWithLLM({ kb_json, company_system_prompt, user, history=[], mode="text" }) {
   if (!process.env.OPENAI_API_KEY) return null;
   if (!kb_json || !company_system_prompt) return null;
@@ -180,53 +163,40 @@ async function kbAnswerWithLLM({ kb_json, company_system_prompt, user, history=[
   return text;
 }
 
-// --- Main handler -------------------------------------------------------------
 module.exports = async (req, res) => {
   if (req.method !== "POST") { res.status(405).json({ ok:false, error:"Method Not Allowed" }); return; }
 
   try{
     const body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body||{});
     let {
-      utterance="", kb={}, client={}, mode="text", response_to,
+      utterance="", kb={}, client={}, mode="text",
       kb_json = null, company_system_prompt = null, history = [],
       tenant = null, token = null
     } = body;
 
-    // If tenant+token provided, load KB from store
     if (tenant && token) {
       if (!verifyDevToken({ token, tenant })) { res.status(401).json({ ok:false, error:"invalid token" }); return; }
       let t;
-      try {
-        t = await loadTenantById(tenant);
-      } catch (e) {
-        res.status(500).json({ ok:false, error:String(e?.message || e) }); return;
-      }
+      try { t = await loadTenantById(tenant); }
+      catch (e) { res.status(500).json({ ok:false, error:String(e?.message || e) }); return; }
       if (!t) { res.status(404).json({ ok:false, error:"tenant not found" }); return; }
       company_system_prompt = company_system_prompt || t.company_system_prompt || null;
       kb_json = kb_json || t.kb_json || null;
     }
 
-    // client contact resolution
     const phone = (client.phone || kb?.demo_client?.phone || "").trim();
     const email = (client.email || kb?.demo_client?.email || "").trim();
 
     const { intent, topic } = detect(utterance);
 
-    // Try LLM first if KB + system prompt are present
     let llmText = null;
-    try {
-      llmText = await kbAnswerWithLLM({ kb_json, company_system_prompt, user: utterance, history, mode });
-    } catch (_) { /* swallow and fallback */ }
+    try { llmText = await kbAnswerWithLLM({ kb_json, company_system_prompt, user: utterance, history, mode }); } catch (_) {}
 
     if (llmText) {
-      res.status(200).json({
-        mode, script: [{ text: llmText }], cards: [],
-        meta: { intent: "kb_answer", topic, trace_id: trace(), used_llm: true }
-      });
+      res.status(200).json({ mode, script:[{ text: llmText }], cards:[], meta:{ intent:"kb_answer", topic, trace_id:trace(), used_llm:true } });
       return;
     }
 
-    // ---- FALLBACK demo flows ----
     const answer = buildAnswer(topic, kb);
     const proto = req.headers["x-forwarded-proto"] || "https";
     const baseUrl = `${proto}://${req.headers.host}`;
@@ -235,67 +205,33 @@ module.exports = async (req, res) => {
     const cards  = [];
     const say = (text, delay=0) => script.push({ text, delay_ms: delay });
 
-    if (intent === "inventory_lookup") {
-      say("Sure — opening Inventory → Stock Check…", 0);
-      say("Give me a second to pull live counts…", 600);
-      say(`Found it.`, 700);
-      cards.push(answer);
+    if (intent === "inventory_lookup") { say("Sure — opening Inventory → Stock Check…",0); say("Give me a second…",600); say("Found it.",700); cards.push(answer); }
+    else if (intent === "sales_report") { say("On it — fetching Sales → Weekly Revenue…",0); say("Compiling…",700); say("Ready.",600); cards.push(answer); }
+    else if (intent === "hr_schedule") { say("Opening HR → Time Off…",0); say("Checking upcoming vacations…",600); cards.push(answer); }
 
-    } else if (intent === "sales_report") {
-      say("On it — fetching Sales → Weekly Revenue…", 0);
-      say("Compiling the last two weeks…", 700);
-      say("Ready.", 600);
-      cards.push(answer);
-
-    } else if (intent === "hr_schedule") {
-      say("Opening HR → Time Off…", 0);
-      say("Checking upcoming vacations…", 600);
-      cards.push(answer);
-
-    } else if (intent === "create_invoice") {
-      const ctx = trace();
-      say("Absolutely — I’ll prepare the invoice for Mr. Martin.", 0);
-      say("I’ll grab recent work items and fill the template.", 700);
-      say("Where should I send it?", 600);
-      res.status(200).json({
-        mode, script,
-        ask: {
-          context_id: ctx,
-          question: "Send the invoice via…",
-          options: [{ id:"whatsapp", label:"WhatsApp" }, { id:"email", label:"Email" }],
-          requires: { whatsapp: !!phone, email: !!email }
-        },
-        meta: { intent, topic, trace_id: ctx }
-      });
-      return;
-    }
-
-    // Deliver actions
     let performed = null;
     try{
       if (intent === "send_email") {
         if (!email) throw new Error("No email on file");
-        say("Sure — packaging the report and sending email…", 0);
-        await postJSON(baseUrl, "/api/sendMailgun", { to: email, subject: `Your ${topic} report`, html: htmlFrom(answer, "email") });
-        say(`Done — sent to ${email}.`, 900);
+        say("Sure — packaging the report and sending email…",0);
+        await postJSON(baseUrl,"/api/sendMailgun",{ to: email, subject: `Your ${topic} report`, html: htmlFrom(answer,"email") });
+        say(`Done — sent to ${email}.`,900);
         performed = { ok:true, type:"email", to:email };
-
       } else if (intent === "send_whatsapp") {
         if (!phone) throw new Error("No phone on file");
-        say("Got it — composing WhatsApp message…", 0);
-        await postJSON(baseUrl, "/api/sendWhatsApp", { to: phone, body: `Your ${topic} report:\n\n${textFromAnswer(answer)}` });
-        say(`Sent on WhatsApp to ${phone}.`, 900);
+        say("Got it — composing WhatsApp message…",0);
+        await postJSON(baseUrl,"/api/sendWhatsApp",{ to: phone, body: `Your ${topic} report:\n\n${textFromAnswer(answer)}` });
+        say(`Sent on WhatsApp to ${phone}.`,900);
         performed = { ok:true, type:"whatsapp", to:phone };
-
       } else if (intent === "place_call") {
         if (!phone) throw new Error("No phone on file");
-        say("Okay — placing a quick follow-up call…", 0);
-        await postJSON(baseUrl, "/api/call", { to: phone, message: `This is your AI Employee with your ${topic} update. I also sent details to your inbox.` });
-        say(`Calling ${phone} now.`, 900);
+        say("Okay — placing a quick follow-up call…",0);
+        await postJSON(baseUrl,"/api/call",{ to: phone, message: `This is your AI Employee with your ${topic} update. I also sent details to your inbox.` });
+        say(`Calling ${phone} now.`,900);
         performed = { ok:true, type:"call", to:phone };
       }
     } catch (e) {
-      say(`Action failed: ${String(e.message||e)}.`, 0);
+      say(`Action failed: ${String(e.message||e)}.`,0);
       performed = { ok:false, error:String(e.message||e) };
     }
 
@@ -307,7 +243,6 @@ module.exports = async (req, res) => {
     });
 
   } catch (e) {
-    console.error('demoAgent crash:', e);
     res.status(500).json({ ok:false, error:'server_error', detail:String(e?.message || e) });
   }
 };
