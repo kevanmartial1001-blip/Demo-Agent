@@ -1,11 +1,8 @@
 // /api/demoAgent.js
-// Human-like demo assistant. If OPENAI_API_KEY + kb_json/company_system_prompt are present
-// (either via tenant+token or direct in body), it returns KB-grounded ChatGPT-style answers.
-// DEV build: token validated by format + expiry + tenant match (signature ignored).
+// Demo assistant that becomes KB-grounded when kb_json + company_system_prompt are present
+// (from tenant+token or passed directly). DEV token check (no crypto).
 
-module.exports.config = { runtime: "nodejs20.x" }; // <-- Force Node runtime for ./_lib/sheets
-
-const { openTenantsSheet } = require('./_lib/sheets');
+module.exports.config = { runtime: "nodejs20.x" };
 
 const MAX_JSON_CHARS = 120000;
 const MODEL = process.env.OPENAI_AGENT_MODEL || "gpt-4o-mini";
@@ -23,16 +20,29 @@ function verifyDevToken({ token, tenant }) {
   return true;
 }
 
-// --- Tenant loader ------------------------------------------------------------
+// Lazy-load Sheets module and open it (called only if tenant+token used)
+async function safeOpenTenantsSheet() {
+  let openTenantsSheet;
+  try {
+    ({ openTenantsSheet } = require('./_lib/sheets'));
+  } catch (e) {
+    throw new Error('sheets_module_load_failed: ' + String(e?.message || e));
+  }
+  try {
+    return await openTenantsSheet();
+  } catch (e) {
+    throw new Error('sheet_open_failed: ' + String(e?.message || e));
+  }
+}
+
 async function loadTenantById(tenant_id) {
-  let sheet;
-  try { sheet = await openTenantsSheet(); }
-  catch (e) { throw new Error('sheet_open_failed: ' + String(e?.message || e)); }
-
+  const sheet = await safeOpenTenantsSheet();
   let rows;
-  try { rows = await sheet.getRows({ query: `tenant_id = "${tenant_id}"` }); }
-  catch (e) { throw new Error('sheet_query_failed: ' + String(e?.message || e)); }
-
+  try {
+    rows = await sheet.getRows({ query: `tenant_id = "${tenant_id}"` });
+  } catch (e) {
+    throw new Error('sheet_query_failed: ' + String(e?.message || e));
+  }
   if (!rows || !rows.length) return null;
 
   const r = rows[0];
@@ -182,12 +192,16 @@ module.exports = async (req, res) => {
       tenant = null, token = null
     } = body;
 
-    // If tenant+token provided, load KB from store (dev verifier)
+    // If tenant+token provided, load KB from store
     if (tenant && token) {
       if (!verifyDevToken({ token, tenant })) { res.status(401).json({ ok:false, error:"invalid token" }); return; }
-      const t = await loadTenantById(tenant);
+      let t;
+      try {
+        t = await loadTenantById(tenant);
+      } catch (e) {
+        res.status(500).json({ ok:false, error:String(e?.message || e) }); return;
+      }
       if (!t) { res.status(404).json({ ok:false, error:"tenant not found" }); return; }
-      // Prefer explicit body values, but fill from tenant if missing
       company_system_prompt = company_system_prompt || t.company_system_prompt || null;
       kb_json = kb_json || t.kb_json || null;
     }
