@@ -1,15 +1,22 @@
 // api/tenantGet.js
+// Reads tenant row from Google Sheets.
+// Reassembles large KBs from kb_json_1..kb_json_6 if kb_json is empty.
+
 module.exports.config = { runtime: "nodejs20.x" };
+
+const CHUNK_HEADERS = ["kb_json_1","kb_json_2","kb_json_3","kb_json_4","kb_json_5","kb_json_6"];
 
 function verifyDev({ token, tenant }) {
   if (!token || !tenant) return false;
-  const parts = String(token).split('.');
-  if (parts.length !== 3) return false;
-  const [tFromToken, expStr] = parts;
+  const [t, expStr, sig] = String(token).split('.');
   const exp = parseInt(expStr, 10);
-  if (!tFromToken || tFromToken !== tenant) return false;
+  if (!t || t !== tenant) return false;
   if (!Number.isFinite(exp) || exp < Math.floor(Date.now() / 1000)) return false;
-  return true;
+  return true; // DEV token (no signature)
+}
+
+function safeJSON(str, fb) {
+  try { return str ? JSON.parse(str) : fb; } catch { return fb; }
 }
 
 module.exports = async (req, res) => {
@@ -37,7 +44,12 @@ module.exports = async (req, res) => {
     if (!rows || !rows.length) { res.status(404).json({ ok:false, error:'not_found' }); return; }
 
     const r = rows[0];
-    const safeParse = (s, fb) => { try { return s ? JSON.parse(s) : fb; } catch { return fb; } };
+    // Prefer main kb_json if present, otherwise stitch chunks
+    let kb_json_raw = r.get('kb_json') || '';
+    if (!kb_json_raw) {
+      kb_json_raw = CHUNK_HEADERS.map(h => r.get(h) || '').join('');
+    }
+    const kb_json = safeJSON(kb_json_raw, {});
 
     res.status(200).json({
       ok: true,
@@ -48,8 +60,8 @@ module.exports = async (req, res) => {
         domain: r.get('domain'),
         homepage_url: r.get('homepage_url'),
         kb_version: r.get('kb_version'),
-        kb_sources: safeParse(r.get('kb_sources_json'), []),
-        kb_json:    safeParse(r.get('kb_json'), {}),
+        kb_sources: safeJSON(r.get('kb_sources_json'), []),
+        kb_json,
         company_system_prompt: r.get('company_system_prompt'),
         updated_at: r.get('updated_at'),
       }
