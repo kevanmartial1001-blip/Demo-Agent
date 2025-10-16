@@ -1,25 +1,20 @@
 // api/tenantGet.js
 // Returns the stored tenant (KB, prompt, etc.) for UI grounding.
-
-module.exports.config = { runtime: "nodejs20.x" }; // ensure Node runtime (crypto OK)
+// DEV build: no crypto; token is validated by format + expiry + tenant match.
 
 const { openTenantsSheet } = require('./_lib/sheets');
-const crypto = require('node:crypto');
 
-function verify(token) {
-  if (!token) return null;
+// Simple dev validator: "<tenant>.<exp>.<sig>" with exp in the future, tenant must match.
+// (We ignore the signature in this dev version to avoid crypto in Edge runtime.)
+function verifyDev({ token, tenant }) {
+  if (!token || !tenant) return false;
   const parts = String(token).split('.');
-  if (parts.length !== 3) return null;
-  const [tenant, expStr, sig] = parts;
+  if (parts.length !== 3) return false;
+  const [tFromToken, expStr/*, sig*/] = parts;
   const exp = parseInt(expStr, 10);
-  if (!tenant || Number.isNaN(exp) || exp < Math.floor(Date.now() / 1000)) return null;
-
-  // Dev-safe: if DEMO_SECRET is missing, accept token (testing only).
-  if (!process.env.DEMO_SECRET) return tenant;
-
-  const raw = `${tenant}.${exp}.${process.env.DEMO_SECRET}`;
-  const chk = crypto.createHash('sha256').update(raw).digest('base64url');
-  return chk === sig ? tenant : null;
+  if (!tFromToken || tFromToken !== tenant) return false;
+  if (!Number.isFinite(exp) || exp < Math.floor(Date.now() / 1000)) return false;
+  return true;
 }
 
 module.exports = async (req, res) => {
@@ -27,29 +22,39 @@ module.exports = async (req, res) => {
     res.status(405).json({ ok:false, error:'GET only' });
     return;
   }
+
   try {
     const q = req.query || {};
     const tenant = q.tenant || q.tenant_id || '';
     const token  = q.token  || '';
 
-    const v = verify(token);
-    if (v !== tenant) { res.status(401).json({ ok:false, error:'invalid token' }); return; }
+    if (!verifyDev({ token, tenant })) {
+      res.status(401).json({ ok:false, error:'invalid token' });
+      return;
+    }
 
+    // Open sheet
     let sheet;
     try {
       sheet = await openTenantsSheet();
     } catch (e) {
-      return res.status(500).json({ ok:false, error:'sheet_open_failed', detail: String(e?.message || e) });
+      res.status(500).json({ ok:false, error:'sheet_open_failed', detail: String(e?.message || e) });
+      return;
     }
 
+    // Query by tenant_id
     let rows;
     try {
       rows = await sheet.getRows({ query: `tenant_id = "${tenant}"` });
     } catch (e) {
-      return res.status(500).json({ ok:false, error:'sheet_query_failed', detail: String(e?.message || e) });
+      res.status(500).json({ ok:false, error:'sheet_query_failed', detail: String(e?.message || e) });
+      return;
     }
 
-    if (!rows.length) { res.status(404).json({ ok:false, error:'not_found' }); return; }
+    if (!rows || !rows.length) {
+      res.status(404).json({ ok:false, error:'not_found' });
+      return;
+    }
 
     const r = rows[0];
     const safeParse = (s, fb) => { try { return s ? JSON.parse(s) : fb; } catch { return fb; } };
