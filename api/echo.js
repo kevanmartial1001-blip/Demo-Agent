@@ -1,15 +1,20 @@
 // /api/echo.js
-export const config = { runtime: 'nodejs18.x' };
+// CommonJS + Vercel "nodejs" runtime
 
-export default async function handler(req, res) {
+module.exports.config = { runtime: "nodejs" };
+
+module.exports = async (req, res) => {
   try {
-    const ct = req.headers['content-type'] || '';
-    const isJson = ct.includes('application/json');
-    const body = typeof req.body === 'string'
-      ? (isJson ? JSON.parse(req.body || '{}') : req.body)
-      : (req.body || {});
+    const ct = String(req.headers["content-type"] || "");
+    const isJson = ct.includes("application/json");
 
-    return res.status(200).json({
+    // Handle both raw string and already-parsed bodies
+    const body =
+      typeof req.body === "string"
+        ? (isJson ? JSON.parse(req.body || "{}") : req.body)
+        : (req.body || {});
+
+    res.status(200).json({
       ok: true,
       method: req.method,
       content_type: ct,
@@ -21,6 +26,6 @@ export default async function handler(req, res) {
       },
     });
   } catch (e) {
-    return res.status(500).json({ ok:false, error:String(e?.message||e) });
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
-}
+};
