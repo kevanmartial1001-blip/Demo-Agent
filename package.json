@@ -9,5 +9,7 @@
   },
   "dependencies": {
     "openai": "^4.56.0"
+    "googleapis": "^126.0.1"
   }
 }
+
