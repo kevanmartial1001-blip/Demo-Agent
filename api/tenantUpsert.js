@@ -1,6 +1,7 @@
 // /api/tenantUpsert.js
 // CommonJS + Vercel "nodejs" runtime (kept)
-// Adds: kb_json serialization + real UPSERT by tenant_id + preserve created_at
+// Adds: kb_json serialization + real UPSERT by tenant_id
+//       CHUNKED storage for large KBs: kb_json_1..kb_json_6 (≈270k chars)
 
 module.exports.config = { runtime: "nodejs" };
 
@@ -24,7 +25,7 @@ function serviceAuth() {
     e.code = 500;
     throw e;
   }
-  key = key.replace(/\\n/g, "\n"); // Vercel literal \n handling
+  key = key.replace(/\\n/g, "\n"); // handle literal \n in Vercel env
   return new google.auth.JWT({
     email,
     key,
@@ -44,7 +45,11 @@ async function getSheets() {
   return { sheets, spreadsheetId };
 }
 
-// NOTE: add kb_json between kb_sources_json and company_system_prompt
+// NOTE: we add kb_json_1..kb_json_6 to bypass ~50k chars/cell limit.
+const KB_JSON_CHUNK_HEADERS = [
+  "kb_json_1","kb_json_2","kb_json_3","kb_json_4","kb_json_5","kb_json_6"
+];
+
 const EXPECTED_HEADERS = [
   "tenant_id",
   "company_id",
@@ -54,7 +59,8 @@ const EXPECTED_HEADERS = [
   "kb_version",
   "demo_url",
   "kb_sources_json",
-  "kb_json",
+  "kb_json",                 // small KBs can fit here
+  ...KB_JSON_CHUNK_HEADERS,  // large KBs across these
   "company_system_prompt",
   "created_at",
   "updated_at",
@@ -71,7 +77,7 @@ async function ensureHeaderRow(sheets, spreadsheetId, sheetTitle = "Tenants") {
 
   const read = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: `${title}!A1:Z1`,
+    range: `${title}!A1:ZZ1`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
   const existing = (read.data.values && read.data.values[0]) || [];
@@ -96,17 +102,21 @@ function serializeKbJson(kb_json) {
   try {
     if (kb_json == null) return "";
     if (typeof kb_json === "string") {
-      // accept pre-stringified JSON; ensure it's at least object-ish
       const trimmed = kb_json.trim();
       if (trimmed.startsWith("{") || trimmed.startsWith("[")) return trimmed;
-      // otherwise wrap as a string field
       return JSON.stringify({ value: kb_json });
     }
-    // object/array
     return JSON.stringify(kb_json);
   } catch {
     return "";
   }
+}
+
+// Split into chunks <= limit; returns array of strings
+function chunkString(s, maxLen){
+  const out=[]; let i=0;
+  while(i < s.length){ out.push(s.slice(i, i+maxLen)); i += maxLen; }
+  return out;
 }
 
 function makeRow(body, headers, { preserveCreatedAt } = {}) {
@@ -140,8 +150,18 @@ function makeRow(body, headers, { preserveCreatedAt } = {}) {
   }
   set("kb_sources_json", body.kb_sources_json || "");
 
-  // NEW: kb_json serialization
-  set("kb_json", serializeKbJson(body.kb_json));
+  // ---- NEW: store kb_json; chunk if large ----
+  const serialized = serializeKbJson(body.kb_json);
+  const CELL_LIMIT = 45000; // below ~50k Google limit for safety
+  if (serialized.length <= CELL_LIMIT) {
+    set("kb_json", serialized);
+    // clear chunk columns (important on update)
+    for (const h of KB_JSON_CHUNK_HEADERS) set(h, "");
+  } else {
+    set("kb_json", ""); // keep small cell empty when chunked
+    const chunks = chunkString(serialized, CELL_LIMIT).slice(0, KB_JSON_CHUNK_HEADERS.length);
+    KB_JSON_CHUNK_HEADERS.forEach((h, i)=> set(h, chunks[i] || ""));
+  }
 
   set("company_system_prompt", body.company_system_prompt || "");
 
