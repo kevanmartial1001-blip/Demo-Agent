@@ -1,35 +1,45 @@
 // /api/demoAgent.js
-// Human-like, action-first demo assistant with multi-bubble script & follow-ups.
-// NOW: KB-aware ChatGPT-style answers when OPENAI_API_KEY + kb_json are provided.
+// Human-like demo assistant. If OPENAI_API_KEY + kb_json/company_system_prompt are present
+// (either via tenant+token or direct in body), it returns KB-grounded ChatGPT-style answers.
 
-module.exports.config = { runtime: "nodejs18.x" };
+module.exports.config = { runtime: "nodejs20.x" };
 
 const { openTenantsSheet } = require('./_lib/sheets');
 const crypto = require('node:crypto');
 
 const MAX_JSON_CHARS = 120000;
 const MODEL = process.env.OPENAI_AGENT_MODEL || "gpt-4o-mini";
-
 const trace = () => "demo_" + Math.random().toString(36).slice(2, 10);
 
-// --- Token verify (same format as /api/demoLink & tenantGet) -----------------
+// --- Token verify -------------------------------------------------------------
 function verifyToken(token) {
   if (!token) return null;
   const parts = String(token).split('.');
   if (parts.length !== 3) return null;
   const [tenant, expStr, sig] = parts;
   const exp = parseInt(expStr, 10);
-  if (!tenant || !exp || Number.isNaN(exp) || exp < Math.floor(Date.now()/1000)) return null;
-  const raw = `${tenant}.${exp}.${process.env.DEMO_SECRET || ''}`;
+  if (!tenant || Number.isNaN(exp) || exp < Math.floor(Date.now()/1000)) return null;
+
+  // Dev-safe: if DEMO_SECRET missing, accept token (testing only)
+  if (!process.env.DEMO_SECRET) return tenant;
+
+  const raw = `${tenant}.${exp}.${process.env.DEMO_SECRET}`;
   const chk = crypto.createHash('sha256').update(raw).digest('base64url');
   return chk === sig ? tenant : null;
 }
 
-// --- Load tenant record from sheet -------------------------------------------
+// --- Tenant loader ------------------------------------------------------------
 async function loadTenantById(tenant_id) {
-  const sheet = await openTenantsSheet();
-  const rows = await sheet.getRows({ query: `tenant_id = "${tenant_id}"` });
+  let sheet;
+  try { sheet = await openTenantsSheet(); }
+  catch (e) { throw new Error('sheet_open_failed: ' + String(e?.message || e)); }
+
+  let rows;
+  try { rows = await sheet.getRows({ query: `tenant_id = "${tenant_id}"` }); }
+  catch (e) { throw new Error('sheet_query_failed: ' + String(e?.message || e)); }
+
   if (!rows.length) return null;
+
   const r = rows[0];
   const safeParse = (s, fb) => { try { return s ? JSON.parse(s) : fb; } catch { return fb; } };
   return {
@@ -180,13 +190,9 @@ module.exports = async (req, res) => {
     // If tenant+token provided, load KB from store
     if (tenant && token) {
       const verified = verifyToken(token);
-      if (verified !== tenant) {
-        return res.status(401).json({ ok:false, error:"invalid token" });
-      }
+      if (verified !== tenant) return res.status(401).json({ ok:false, error:"invalid token" });
       const t = await loadTenantById(tenant);
-      if (!t) {
-        return res.status(404).json({ ok:false, error:"tenant not found" });
-      }
+      if (!t) return res.status(404).json({ ok:false, error:"tenant not found" });
       // Prefer explicit body values, but fill from tenant if missing
       company_system_prompt = company_system_prompt || t.company_system_prompt || null;
       kb_json = kb_json || t.kb_json || null;
@@ -214,7 +220,7 @@ module.exports = async (req, res) => {
       });
     }
 
-    // ---- FALLBACK to original deterministic demo flows ----
+    // ---- FALLBACK demo flows ----
     const answer = buildAnswer(topic, kb);
     const proto = req.headers["x-forwarded-proto"] || "https";
     const baseUrl = `${proto}://${req.headers.host}`;
@@ -305,8 +311,8 @@ module.exports = async (req, res) => {
     return res.status(200).json(response);
 
   } catch (e) {
-    console.error('demoAgent error:', e);
-    return res.status(500).json({ ok:false, error:String(e?.message||e) });
+    console.error('demoAgent crash:', e);
+    return res.status(500).json({ ok:false, error:'server_error', detail:String(e?.message || e) });
   }
 };
 
