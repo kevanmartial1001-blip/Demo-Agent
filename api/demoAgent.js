@@ -4,10 +4,43 @@
 
 module.exports.config = { runtime: "nodejs18.x" };
 
+const { openTenantsSheet } = require('./_lib/sheets');
+const crypto = require('node:crypto');
+
 const MAX_JSON_CHARS = 120000;
 const MODEL = process.env.OPENAI_AGENT_MODEL || "gpt-4o-mini";
 
 const trace = () => "demo_" + Math.random().toString(36).slice(2, 10);
+
+// --- Token verify (same format as /api/demoLink & tenantGet) -----------------
+function verifyToken(token) {
+  if (!token) return null;
+  const parts = String(token).split('.');
+  if (parts.length !== 3) return null;
+  const [tenant, expStr, sig] = parts;
+  const exp = parseInt(expStr, 10);
+  if (!tenant || !exp || Number.isNaN(exp) || exp < Math.floor(Date.now()/1000)) return null;
+  const raw = `${tenant}.${exp}.${process.env.DEMO_SECRET || ''}`;
+  const chk = crypto.createHash('sha256').update(raw).digest('base64url');
+  return chk === sig ? tenant : null;
+}
+
+// --- Load tenant record from sheet -------------------------------------------
+async function loadTenantById(tenant_id) {
+  const sheet = await openTenantsSheet();
+  const rows = await sheet.getRows({ query: `tenant_id = "${tenant_id}"` });
+  if (!rows.length) return null;
+  const r = rows[0];
+  const safeParse = (s, fb) => { try { return s ? JSON.parse(s) : fb; } catch { return fb; } };
+  return {
+    tenant_id: r.get('tenant_id'),
+    company_system_prompt: r.get('company_system_prompt') || null,
+    kb_json: safeParse(r.get('kb_json'), null),
+    kb_sources: safeParse(r.get('kb_sources_json'), []),
+    company_name: r.get('company_name'),
+    kb_version: r.get('kb_version'),
+  };
+}
 
 // --- Demo data builders (fallback) -------------------------------------------
 const mkTable = (columns, rows) => ({ format:"table", summary:"Demo numbers (connect for live data).", value:{ columns, rows }});
@@ -91,7 +124,7 @@ function briefFromKB(kb) {
   const counts = Object.fromEntries(Object.entries(sections).map(([k,v]) => [k, Array.isArray(v)? v.length:0]));
   const lines = [
     `Company: ${co.name || "unknown"} (${co.domain || "unknown"})`,
-    `Homepage: ${co.homepage_url || "unknown"}`,
+    `Homepage: ${co.homepage_url || co.url || "unknown"}`,
     `KB version: ${meta.kb_version || "unknown"}`,
     `Sections: ${Object.entries(counts).map(([k,n]) => `${k}(${n})`).join(", ") || "none"}`
   ];
@@ -138,11 +171,26 @@ module.exports = async (req, res) => {
 
   try{
     const body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body||{});
-    const {
+    let {
       utterance="", kb={}, client={}, mode="text", response_to,
-      // NEW: passed by DemoChat.html
-      kb_json = null, company_system_prompt = null, history = []
+      kb_json = null, company_system_prompt = null, history = [],
+      tenant = null, token = null
     } = body;
+
+    // If tenant+token provided, load KB from store
+    if (tenant && token) {
+      const verified = verifyToken(token);
+      if (verified !== tenant) {
+        return res.status(401).json({ ok:false, error:"invalid token" });
+      }
+      const t = await loadTenantById(tenant);
+      if (!t) {
+        return res.status(404).json({ ok:false, error:"tenant not found" });
+      }
+      // Prefer explicit body values, but fill from tenant if missing
+      company_system_prompt = company_system_prompt || t.company_system_prompt || null;
+      kb_json = kb_json || t.kb_json || null;
+    }
 
     // client contact resolution
     const phone = (client.phone || kb?.demo_client?.phone || "").trim();
@@ -166,7 +214,7 @@ module.exports = async (req, res) => {
       });
     }
 
-    // ---- FALLBACK to your original deterministic demo flows ----
+    // ---- FALLBACK to original deterministic demo flows ----
     const answer = buildAnswer(topic, kb);
     const proto = req.headers["x-forwarded-proto"] || "https";
     const baseUrl = `${proto}://${req.headers.host}`;
@@ -257,6 +305,7 @@ module.exports = async (req, res) => {
     return res.status(200).json(response);
 
   } catch (e) {
+    console.error('demoAgent error:', e);
     return res.status(500).json({ ok:false, error:String(e?.message||e) });
   }
 };
