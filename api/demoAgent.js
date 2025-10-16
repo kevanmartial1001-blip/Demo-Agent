@@ -1,8 +1,9 @@
 // /api/demoAgent.js
 // Human-like demo assistant. If OPENAI_API_KEY + kb_json/company_system_prompt are present
 // (either via tenant+token or direct in body), it returns KB-grounded ChatGPT-style answers.
-//
-// DEV build: no crypto; token is validated by format + expiry + tenant match (signature ignored).
+// DEV build: token validated by format + expiry + tenant match (signature ignored).
+
+module.exports.config = { runtime: "nodejs20.x" }; // <-- Force Node runtime for ./_lib/sheets
 
 const { openTenantsSheet } = require('./_lib/sheets');
 
@@ -15,7 +16,7 @@ function verifyDevToken({ token, tenant }) {
   if (!token || !tenant) return false;
   const parts = String(token).split('.');
   if (parts.length !== 3) return false;
-  const [tFromToken, expStr/*, sig*/] = parts;
+  const [tFromToken, expStr /*, sig*/] = parts;
   const exp = parseInt(expStr, 10);
   if (!tFromToken || tFromToken !== tenant) return false;
   if (!Number.isFinite(exp) || exp < Math.floor(Date.now()/1000)) return false;
@@ -171,10 +172,7 @@ async function kbAnswerWithLLM({ kb_json, company_system_prompt, user, history=[
 
 // --- Main handler -------------------------------------------------------------
 module.exports = async (req, res) => {
-  if (req.method !== "POST") {
-    res.status(405).json({ ok:false, error:"Method Not Allowed" });
-    return;
-  }
+  if (req.method !== "POST") { res.status(405).json({ ok:false, error:"Method Not Allowed" }); return; }
 
   try{
     const body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body||{});
@@ -186,15 +184,9 @@ module.exports = async (req, res) => {
 
     // If tenant+token provided, load KB from store (dev verifier)
     if (tenant && token) {
-      if (!verifyDevToken({ token, tenant })) {
-        res.status(401).json({ ok:false, error:"invalid token" });
-        return;
-      }
+      if (!verifyDevToken({ token, tenant })) { res.status(401).json({ ok:false, error:"invalid token" }); return; }
       const t = await loadTenantById(tenant);
-      if (!t) {
-        res.status(404).json({ ok:false, error:"tenant not found" });
-        return;
-      }
+      if (!t) { res.status(404).json({ ok:false, error:"tenant not found" }); return; }
       // Prefer explicit body values, but fill from tenant if missing
       company_system_prompt = company_system_prompt || t.company_system_prompt || null;
       kb_json = kb_json || t.kb_json || null;
@@ -212,12 +204,9 @@ module.exports = async (req, res) => {
       llmText = await kbAnswerWithLLM({ kb_json, company_system_prompt, user: utterance, history, mode });
     } catch (_) { /* swallow and fallback */ }
 
-    // If LLM produced an answer, return a chat-style script immediately
     if (llmText) {
       res.status(200).json({
-        mode,
-        script: [{ text: llmText }],
-        cards: [],
+        mode, script: [{ text: llmText }], cards: [],
         meta: { intent: "kb_answer", topic, trace_id: trace(), used_llm: true }
       });
       return;
@@ -255,15 +244,11 @@ module.exports = async (req, res) => {
       say("I’ll grab recent work items and fill the template.", 700);
       say("Where should I send it?", 600);
       res.status(200).json({
-        mode,
-        script,
+        mode, script,
         ask: {
           context_id: ctx,
           question: "Send the invoice via…",
-          options: [
-            { id:"whatsapp", label:"WhatsApp" },
-            { id:"email",    label:"Email" }
-          ],
+          options: [{ id:"whatsapp", label:"WhatsApp" }, { id:"email", label:"Email" }],
           requires: { whatsapp: !!phone, email: !!email }
         },
         meta: { intent, topic, trace_id: ctx }
@@ -277,27 +262,21 @@ module.exports = async (req, res) => {
       if (intent === "send_email") {
         if (!email) throw new Error("No email on file");
         say("Sure — packaging the report and sending email…", 0);
-        await postJSON(baseUrl, "/api/sendMailgun", {
-          to: email, subject: `Your ${topic} report`, html: htmlFrom(answer, "email")
-        });
+        await postJSON(baseUrl, "/api/sendMailgun", { to: email, subject: `Your ${topic} report`, html: htmlFrom(answer, "email") });
         say(`Done — sent to ${email}.`, 900);
         performed = { ok:true, type:"email", to:email };
 
       } else if (intent === "send_whatsapp") {
         if (!phone) throw new Error("No phone on file");
         say("Got it — composing WhatsApp message…", 0);
-        await postJSON(baseUrl, "/api/sendWhatsApp", {
-          to: phone, body: `Your ${topic} report:\n\n${textFromAnswer(answer)}`
-        });
+        await postJSON(baseUrl, "/api/sendWhatsApp", { to: phone, body: `Your ${topic} report:\n\n${textFromAnswer(answer)}` });
         say(`Sent on WhatsApp to ${phone}.`, 900);
         performed = { ok:true, type:"whatsapp", to:phone };
 
       } else if (intent === "place_call") {
         if (!phone) throw new Error("No phone on file");
         say("Okay — placing a quick follow-up call…", 0);
-        await postJSON(baseUrl, "/api/call", {
-          to: phone, message: `This is your AI Employee with your ${topic} update. I also sent details to your inbox.`
-        });
+        await postJSON(baseUrl, "/api/call", { to: phone, message: `This is your AI Employee with your ${topic} update. I also sent details to your inbox.` });
         say(`Calling ${phone} now.`, 900);
         performed = { ok:true, type:"call", to:phone };
       }
