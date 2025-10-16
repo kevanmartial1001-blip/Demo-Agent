@@ -1,16 +1,17 @@
 // api/tenantGet.js
 // Returns the stored tenant (KB, prompt, etc.) for UI grounding.
-// DEV build: no crypto; token is validated by format + expiry + tenant match.
+// DEV build: token validated by format + expiry + tenant match (signature ignored).
+
+module.exports.config = { runtime: "nodejs20.x" }; // <-- Force Node runtime so ./_lib/sheets works
 
 const { openTenantsSheet } = require('./_lib/sheets');
 
 // Simple dev validator: "<tenant>.<exp>.<sig>" with exp in the future, tenant must match.
-// (We ignore the signature in this dev version to avoid crypto in Edge runtime.)
 function verifyDev({ token, tenant }) {
   if (!token || !tenant) return false;
   const parts = String(token).split('.');
   if (parts.length !== 3) return false;
-  const [tFromToken, expStr/*, sig*/] = parts;
+  const [tFromToken, expStr /*, sig*/] = parts;
   const exp = parseInt(expStr, 10);
   if (!tFromToken || tFromToken !== tenant) return false;
   if (!Number.isFinite(exp) || exp < Math.floor(Date.now() / 1000)) return false;
@@ -19,8 +20,7 @@ function verifyDev({ token, tenant }) {
 
 module.exports = async (req, res) => {
   if (req.method !== 'GET') {
-    res.status(405).json({ ok:false, error:'GET only' });
-    return;
+    res.status(405).json({ ok:false, error:'GET only' }); return;
   }
 
   try {
@@ -29,8 +29,7 @@ module.exports = async (req, res) => {
     const token  = q.token  || '';
 
     if (!verifyDev({ token, tenant })) {
-      res.status(401).json({ ok:false, error:'invalid token' });
-      return;
+      res.status(401).json({ ok:false, error:'invalid token' }); return;
     }
 
     // Open sheet
@@ -38,8 +37,7 @@ module.exports = async (req, res) => {
     try {
       sheet = await openTenantsSheet();
     } catch (e) {
-      res.status(500).json({ ok:false, error:'sheet_open_failed', detail: String(e?.message || e) });
-      return;
+      res.status(500).json({ ok:false, error:'sheet_open_failed', detail: String(e?.message || e) }); return;
     }
 
     // Query by tenant_id
@@ -47,13 +45,11 @@ module.exports = async (req, res) => {
     try {
       rows = await sheet.getRows({ query: `tenant_id = "${tenant}"` });
     } catch (e) {
-      res.status(500).json({ ok:false, error:'sheet_query_failed', detail: String(e?.message || e) });
-      return;
+      res.status(500).json({ ok:false, error:'sheet_query_failed', detail: String(e?.message || e) }); return;
     }
 
     if (!rows || !rows.length) {
-      res.status(404).json({ ok:false, error:'not_found' });
-      return;
+      res.status(404).json({ ok:false, error:'not_found' }); return;
     }
 
     const r = rows[0];
