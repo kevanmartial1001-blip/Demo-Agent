@@ -1,14 +1,14 @@
 // /api/tenantGet.js
-// Reassembles kb_json split across kb_json, kb_json_1..n with robust per-chunk dequoting + salvage.
-// Add ?debug=1 to see parse diagnostics incl. head/tail samples.
+// Reads a tenant row from Google Sheets, stitches kb_json segment columns, parses JSON, and returns it.
+// Runtime: Node 18 on Vercel
 
-module.exports.config = { runtime: "nodejs" };
+module.exports.config = { runtime: "nodejs18.x" };
 
-const crypto = require("node:crypto");
 const { google } = require("googleapis");
+const crypto = require("node:crypto");
 
-// ---------- token verify ----------
-function verifyToken(token) {
+// ----- token verify (must match /api/demoLink) -----
+function verify(token) {
   if (!token) return null;
   const [tenant, expStr, sig] = String(token).split(".");
   const exp = parseInt(expStr, 10);
@@ -18,166 +18,165 @@ function verifyToken(token) {
   return chk === sig ? tenant : null;
 }
 
-// ---------- Google Sheets ----------
+// ----- google sheets helpers -----
 function serviceAuth() {
   const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
   let key = process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
-  if (!email || !key) throw new Error("Google SA missing");
-  key = key.replace(/\\n/g, "\n");
+  if (!email || !key) {
+    const e = new Error("Google service account not configured (env missing)");
+    e.code = 500;
+    throw e;
+  }
+  key = key.replace(/\\n/g, "\n"); // Vercel multiline secrets
   return new google.auth.JWT({
     email,
     key,
     scopes: ["https://www.googleapis.com/auth/spreadsheets.readonly"],
   });
 }
-async function readSheet() {
+
+async function openSheets() {
   const spreadsheetId = process.env.SHEET_ID;
-  if (!spreadsheetId) throw new Error("SHEET_ID missing");
+  if (!spreadsheetId) {
+    const e = new Error("SHEET_ID missing");
+    e.code = 500;
+    throw e;
+  }
   const auth = serviceAuth();
   const sheets = google.sheets({ version: "v4", auth });
-  const { data } = await sheets.spreadsheets.values.get({
-    spreadsheetId,
-    range: "Tenants!A1:ZZ100000",
-    valueRenderOption: "UNFORMATTED_VALUE",
-  });
-  const values = data.values || [];
-  const headers = values[0] || [];
-  const idx = Object.fromEntries(headers.map((h, i) => [h, i]));
-  const rows = values.slice(1).map((r) => {
-    const o = {};
-    headers.forEach((h) => (o[h] = idx[h] != null ? (r[idx[h]] ?? "") : ""));
-    return o;
-  });
-  return { headers, rows };
+  return { sheets, spreadsheetId };
 }
 
-// ---------- JSON helpers ----------
-function parseJSONSafe(s) { try { return s ? JSON.parse(String(s)) : null; } catch { return null; } }
-function hardClean(str){
-  return String(str || "")
-    .replace(/^\uFEFF/, "")                // BOM
-    .replace(/\u0000/g, "")                // nulls
-    .replace(/\u201C|\u201D/g, '"')        // curly double
-    .replace(/\u2018|\u2019/g, "'")        // curly single
-    .replace(/\r/g, "");
-}
-function unwrapIfDoubleEncoded(s){
-  const first = parseJSONSafe(s);
-  if (typeof first === "string") {
-    const second = parseJSONSafe(first);
-    if (second && typeof second === "object") return second;
+// safe JSON.parse
+function safeParseJson(raw) {
+  if (!raw || typeof raw !== "string") return { ok: false, err: "empty" };
+  const cleaned = raw.replace(/^\uFEFF/, "").trim(); // strip BOM + trim
+  try {
+    const obj = JSON.parse(cleaned);
+    return { ok: true, obj };
+  } catch (e) {
+    return { ok: false, err: String(e?.message || e), rawHead: cleaned.slice(0, 180), rawTail: cleaned.slice(-180) };
   }
-  return null;
-}
-function extractBracedJSON(s){
-  const start = s.indexOf("{");
-  const end   = s.lastIndexOf("}");
-  if (start >= 0 && end > start) {
-    const sub = s.slice(start, end + 1);
-    const obj = parseJSONSafe(sub);
-    if (obj && typeof obj === "object") return obj;
-  }
-  return null;
 }
 
-// NEW: try to remove a SINGLE wrapping quote added by Sheets/CSV on each chunk
-function dequoteChunk(raw){
-  let s = hardClean(String(raw||"")).trim();
-  // handle ="...": some exports add a leading '='
-  if (s.startsWith("=")) s = s.slice(1).trim();
-  if (s.startsWith('"') && !s.startsWith('""')) s = s.slice(1);
-  if (s.endsWith('"')   && !s.endsWith('\\"'))  s = s.slice(0, -1);
-  // common escape doubling inside CSV: "" -> "
-  s = s.replace(/""/g, '"');
-  return s;
-}
-
-// Concatenate parts in numeric order, dequote each piece, then salvage parse
-function reassembleKb(headers, row) {
-  const cols = headers
-    .filter((h) => /^kb_json(?:_\d+)?$/i.test(h))
-    .sort((a, b) => {
-      const na = a === "kb_json" ? 0 : parseInt(a.split("_")[2] || a.split("_")[1] || "0", 10);
-      const nb = b === "kb_json" ? 0 : parseInt(b.split("_")[2] || b.split("_")[1] || "0", 10);
-      return na - nb;
-    });
-
-  const partsRaw = cols.map((c) => String(row[c] || ""));
-  const parts = partsRaw.map(dequoteChunk);
-  const joinedRaw = parts.join("");
-  const joined = hardClean(joinedRaw).trim();
-
-  // Attempt 1: parse as-is
-  let kb = parseJSONSafe(joined);
-
-  // Attempt 2: double-encoded big string
-  if (!kb) kb = unwrapIfDoubleEncoded(joined);
-
-  // Attempt 3: extract first{...}last
-  if (!kb) kb = extractBracedJSON(joined);
-
-  // Attempt 4: last resort — try only the first column
-  if (!kb || typeof kb !== "object") kb = parseJSONSafe(hardClean(dequoteChunk(row.kb_json)));
-
-  if (!kb || typeof kb !== "object") kb = {};
-
-  return {
-    kb,
-    kb_parts: cols,
-    kb_joined_len: joined.length,
-    kb_head: joined.slice(0, 200),
-    kb_tail: joined.slice(-200),
-  };
+// derive counts
+function sectionCounts(kbJson) {
+  const s = kbJson?.sections || {};
+  const out = {};
+  for (const [k, v] of Object.entries(s)) out[k] = Array.isArray(v) ? v.length : 0;
+  return out;
 }
 
 module.exports = async (req, res) => {
+  if (req.method !== "GET") {
+    return res.status(405).json({ ok: false, error: "GET only" });
+  }
+
   try {
-    if (req.method !== "GET") return res.status(405).json({ ok:false, error:"GET only" });
-
     const { tenant, token, debug } = req.query || {};
-    const v = verifyToken(token);
-    if (v !== tenant) return res.status(401).json({ ok:false, error:"invalid token" });
-
-    const { headers, rows } = await readSheet();
-    const row = rows.find((r) => String(r.tenant_id) === String(tenant));
-    if (!row) return res.status(404).json({ ok:false, error:"not found" });
-
-    const { kb, kb_parts, kb_joined_len, kb_head, kb_tail } = reassembleKb(headers, row);
-
-    const payload = {
-      tenant_id: row.tenant_id || "",
-      company_id: row.company_id || "",
-      company_name: row.company_name || "",
-      domain: row.domain || "",
-      homepage_url: row.homepage_url || "",
-      kb_version: row.kb_version || "",
-      demo_url: row.demo_url || "",
-      kb_sources: (() => { try { return JSON.parse(row.kb_sources_json || "[]"); } catch { return []; } })(),
-      kb_json: kb,
-      company_system_prompt: row.company_system_prompt || "",
-      updated_at: row.updated_at || "",
-    };
-
-    if (debug) {
-      const sections = kb && kb.sections ? kb.sections : {};
-      return res.status(200).json({
-        ok: true,
-        tenant: payload,
-        _debug: {
-          kb_parts,
-          kb_joined_len,
-          sections_keys: Object.keys(sections),
-          sections_counts: Object.fromEntries(
-            Object.entries(sections).map(([k,v]) => [k, Array.isArray(v) ? v.length : 0])
-          ),
-          sample_head: kb_head,
-          sample_tail: kb_tail,
-        },
-      });
+    const ok = verify(token);
+    if (ok !== tenant) {
+      return res.status(401).json({ ok: false, error: "invalid token" });
     }
 
-    return res.status(200).json({ ok:true, tenant: payload });
+    const { sheets, spreadsheetId } = await openSheets();
+
+    // Read a generous range so we catch wide KB columns.
+    // We’ll use the first sheet (as per your setup).
+    const meta = await sheets.spreadsheets.get({ spreadsheetId });
+    const title = meta?.data?.sheets?.[0]?.properties?.title || "Tenants";
+
+    const read = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `${title}!A1:ZZZ`,
+      valueRenderOption: "UNFORMATTED_VALUE",
+    });
+
+    const values = read?.data?.values || [];
+    if (values.length < 2) {
+      return res.status(404).json({ ok: false, error: "sheet empty" });
+    }
+
+    const headers = values[0].map((h) => String(h || "").trim());
+    const idx = new Map(headers.map((h, i) => [h, i]));
+    if (!idx.has("tenant_id")) {
+      return res.status(500).json({ ok: false, error: "tenant_id column not found" });
+    }
+
+    // find row
+    let row = null;
+    for (let r = 1; r < values.length; r++) {
+      const line = values[r] || [];
+      if ((line[idx.get("tenant_id")] || "") === tenant) {
+        row = line;
+        break;
+      }
+    }
+    if (!row) {
+      return res.status(404).json({ ok: false, error: "not found" });
+    }
+
+    // basic fields
+    const get = (k) => (idx.has(k) ? (row[idx.get(k)] ?? "") : "");
+    const payload = {
+      tenant_id: get("tenant_id"),
+      company_id: get("company_id"),
+      company_name: get("company_name"),
+      domain: get("domain"),
+      homepage_url: get("homepage_url"),
+      kb_version: get("kb_version"),
+      demo_url: get("demo_url"),
+      kb_sources: (() => {
+        const raw = get("kb_sources_json");
+        try { return raw ? JSON.parse(String(raw)) : []; } catch { return []; }
+      })(),
+      company_system_prompt: get("company_system_prompt"),
+      updated_at: get("updated_at"),
+    };
+
+    // ---- stitch kb_json ----
+    const kbCols = headers
+      .map((h, i) => ({ h, i }))
+      .filter(({ h }) => h === "kb_json" || h.startsWith("kb_json_"))
+      .sort((a, b) => {
+        if (a.h === "kb_json") return -1;
+        if (b.h === "kb_json") return 1;
+        // sort kb_json_1, kb_json_2, ...
+        const ai = parseInt(a.h.split("_")[2] || a.h.split("_")[1] || "0", 10) || 0;
+        const bi = parseInt(b.h.split("_")[2] || b.h.split("_")[1] || "0", 10) || 0;
+        return ai - bi;
+      });
+
+    const parts = kbCols.map(({ i }) => String(row[i] ?? "")).filter(Boolean);
+    const kbJoined = parts.join("");
+    let kb_json = {};
+    let parseErr = null;
+
+    if (kbJoined && kbJoined.length) {
+      const p = safeParseJson(kbJoined);
+      if (p.ok) kb_json = p.obj;
+      else parseErr = p;
+    }
+
+    payload.kb_json = kb_json;
+
+    const out = { ok: true, tenant: payload };
+    if (debug) {
+      out._debug = {
+        kb_parts: kbCols.map(({ h }) => h),
+        kb_joined_len: kbJoined.length,
+        sections_keys: Object.keys(kb_json?.sections || {}),
+        sections_counts: sectionCounts(kb_json),
+      };
+      if (parseErr) {
+        out._debug.parse_error = parseErr.err;
+        out._debug.sample_head = parseErr.rawHead;
+        out._debug.sample_tail = parseErr.rawTail;
+      }
+    }
+
+    return res.status(200).json(out);
   } catch (e) {
-    return res.status(500).json({ ok:false, error:String(e?.message || e) });
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 };
