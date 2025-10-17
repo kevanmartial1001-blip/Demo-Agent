@@ -1,6 +1,6 @@
 // /api/tenantGet.js
-// Reassembles kb_json split across kb_json, kb_json_1..n with robust salvage.
-// Add ?debug=1 to see parse diagnostics.
+// Reassembles kb_json split across kb_json, kb_json_1..n with robust per-chunk dequoting + salvage.
+// Add ?debug=1 to see parse diagnostics incl. head/tail samples.
 
 module.exports.config = { runtime: "nodejs" };
 
@@ -51,12 +51,9 @@ async function readSheet() {
   return { headers, rows };
 }
 
-// ---------- JSON parsing helpers ----------
-function parseJSONSafe(s) {
-  if (s == null) return null;
-  try { return JSON.parse(String(s)); } catch { return null; }
-}
-function hardClean(str) {
+// ---------- JSON helpers ----------
+function parseJSONSafe(s) { try { return s ? JSON.parse(String(s)) : null; } catch { return null; } }
+function hardClean(str){
   return String(str || "")
     .replace(/^\uFEFF/, "")                // BOM
     .replace(/\u0000/g, "")                // nulls
@@ -64,8 +61,7 @@ function hardClean(str) {
     .replace(/\u2018|\u2019/g, "'")        // curly single
     .replace(/\r/g, "");
 }
-function unwrapIfDoubleEncoded(s) {
-  // If the whole thing is a JSON string containing JSON, parse twice
+function unwrapIfDoubleEncoded(s){
   const first = parseJSONSafe(s);
   if (typeof first === "string") {
     const second = parseJSONSafe(first);
@@ -73,8 +69,7 @@ function unwrapIfDoubleEncoded(s) {
   }
   return null;
 }
-function extractBracedJSON(s) {
-  // Grab substring from first "{" to last "}" (common when commas/notes are around)
+function extractBracedJSON(s){
   const start = s.indexOf("{");
   const end   = s.lastIndexOf("}");
   if (start >= 0 && end > start) {
@@ -85,7 +80,19 @@ function extractBracedJSON(s) {
   return null;
 }
 
-// Concatenate parts in numeric order and salvage
+// NEW: try to remove a SINGLE wrapping quote added by Sheets/CSV on each chunk
+function dequoteChunk(raw){
+  let s = hardClean(String(raw||"")).trim();
+  // handle ="...": some exports add a leading '='
+  if (s.startsWith("=")) s = s.slice(1).trim();
+  if (s.startsWith('"') && !s.startsWith('""')) s = s.slice(1);
+  if (s.endsWith('"')   && !s.endsWith('\\"'))  s = s.slice(0, -1);
+  // common escape doubling inside CSV: "" -> "
+  s = s.replace(/""/g, '"');
+  return s;
+}
+
+// Concatenate parts in numeric order, dequote each piece, then salvage parse
 function reassembleKb(headers, row) {
   const cols = headers
     .filter((h) => /^kb_json(?:_\d+)?$/i.test(h))
@@ -95,29 +102,31 @@ function reassembleKb(headers, row) {
       return na - nb;
     });
 
-  const parts = cols.map((c) => String(row[c] || ""));
+  const partsRaw = cols.map((c) => String(row[c] || ""));
+  const parts = partsRaw.map(dequoteChunk);
   const joinedRaw = parts.join("");
   const joined = hardClean(joinedRaw).trim();
 
   // Attempt 1: parse as-is
   let kb = parseJSONSafe(joined);
 
-  // Attempt 2: double-encoded (a big quoted string that contains JSON)
+  // Attempt 2: double-encoded big string
   if (!kb) kb = unwrapIfDoubleEncoded(joined);
 
-  // Attempt 3: extract from first "{" to last "}"
+  // Attempt 3: extract first{...}last
   if (!kb) kb = extractBracedJSON(joined);
 
-  // Attempt 4: last resort — try the single kb_json cell only
-  if (!kb || typeof kb !== "object") kb = parseJSONSafe(hardClean(row.kb_json));
+  // Attempt 4: last resort — try only the first column
+  if (!kb || typeof kb !== "object") kb = parseJSONSafe(hardClean(dequoteChunk(row.kb_json)));
 
-  // Keep object or empty
   if (!kb || typeof kb !== "object") kb = {};
 
   return {
     kb,
     kb_parts: cols,
     kb_joined_len: joined.length,
+    kb_head: joined.slice(0, 200),
+    kb_tail: joined.slice(-200),
   };
 }
 
@@ -133,7 +142,7 @@ module.exports = async (req, res) => {
     const row = rows.find((r) => String(r.tenant_id) === String(tenant));
     if (!row) return res.status(404).json({ ok:false, error:"not found" });
 
-    const { kb, kb_parts, kb_joined_len } = reassembleKb(headers, row);
+    const { kb, kb_parts, kb_joined_len, kb_head, kb_tail } = reassembleKb(headers, row);
 
     const payload = {
       tenant_id: row.tenant_id || "",
@@ -161,6 +170,8 @@ module.exports = async (req, res) => {
           sections_counts: Object.fromEntries(
             Object.entries(sections).map(([k,v]) => [k, Array.isArray(v) ? v.length : 0])
           ),
+          sample_head: kb_head,
+          sample_tail: kb_tail,
         },
       });
     }
