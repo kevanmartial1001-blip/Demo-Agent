@@ -1,6 +1,6 @@
 // /api/tenantGet.js
-// Reassembles kb_json split across kb_json, kb_json_1, kb_json_2, …
-// Add ?debug=1 to see which columns were used and joined length.
+// Reassembles kb_json split across kb_json, kb_json_1..n with robust salvage.
+// Add ?debug=1 to see parse diagnostics.
 
 module.exports.config = { runtime: "nodejs" };
 
@@ -37,7 +37,7 @@ async function readSheet() {
   const sheets = google.sheets({ version: "v4", auth });
   const { data } = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: "Tenants!A1:ZZ10000",
+    range: "Tenants!A1:ZZ100000",
     valueRenderOption: "UNFORMATTED_VALUE",
   });
   const values = data.values || [];
@@ -51,12 +51,41 @@ async function readSheet() {
   return { headers, rows };
 }
 
+// ---------- JSON parsing helpers ----------
 function parseJSONSafe(s) {
-  if (!s || typeof s !== "string") return null;
-  try { return JSON.parse(s); } catch { return null; }
+  if (s == null) return null;
+  try { return JSON.parse(String(s)); } catch { return null; }
+}
+function hardClean(str) {
+  return String(str || "")
+    .replace(/^\uFEFF/, "")                // BOM
+    .replace(/\u0000/g, "")                // nulls
+    .replace(/\u201C|\u201D/g, '"')        // curly double
+    .replace(/\u2018|\u2019/g, "'")        // curly single
+    .replace(/\r/g, "");
+}
+function unwrapIfDoubleEncoded(s) {
+  // If the whole thing is a JSON string containing JSON, parse twice
+  const first = parseJSONSafe(s);
+  if (typeof first === "string") {
+    const second = parseJSONSafe(first);
+    if (second && typeof second === "object") return second;
+  }
+  return null;
+}
+function extractBracedJSON(s) {
+  // Grab substring from first "{" to last "}" (common when commas/notes are around)
+  const start = s.indexOf("{");
+  const end   = s.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    const sub = s.slice(start, end + 1);
+    const obj = parseJSONSafe(sub);
+    if (obj && typeof obj === "object") return obj;
+  }
+  return null;
 }
 
-// Concatenate kb_json parts in numeric order and parse
+// Concatenate parts in numeric order and salvage
 function reassembleKb(headers, row) {
   const cols = headers
     .filter((h) => /^kb_json(?:_\d+)?$/i.test(h))
@@ -67,18 +96,29 @@ function reassembleKb(headers, row) {
     });
 
   const parts = cols.map((c) => String(row[c] || ""));
-  // Trim BOM/whitespace that Google Sheets sometimes sneaks in
-  const joined = parts.join("").replace(/^\uFEFF/, "").trim();
+  const joinedRaw = parts.join("");
+  const joined = hardClean(joinedRaw).trim();
 
-  // Try as-is; if it fails, try common quote normalizations
-  let obj = parseJSONSafe(joined);
-  if (!obj) {
-    const normalized = joined
-      .replace(/\u201C|\u201D/g, '"')   // curly double
-      .replace(/\u2018|\u2019/g, "'"); // curly single
-    obj = parseJSONSafe(normalized);
-  }
-  return { kb: obj || {}, kb_parts: cols, kb_joined_len: joined.length };
+  // Attempt 1: parse as-is
+  let kb = parseJSONSafe(joined);
+
+  // Attempt 2: double-encoded (a big quoted string that contains JSON)
+  if (!kb) kb = unwrapIfDoubleEncoded(joined);
+
+  // Attempt 3: extract from first "{" to last "}"
+  if (!kb) kb = extractBracedJSON(joined);
+
+  // Attempt 4: last resort — try the single kb_json cell only
+  if (!kb || typeof kb !== "object") kb = parseJSONSafe(hardClean(row.kb_json));
+
+  // Keep object or empty
+  if (!kb || typeof kb !== "object") kb = {};
+
+  return {
+    kb,
+    kb_parts: cols,
+    kb_joined_len: joined.length,
+  };
 }
 
 module.exports = async (req, res) => {
@@ -110,15 +150,16 @@ module.exports = async (req, res) => {
     };
 
     if (debug) {
+      const sections = kb && kb.sections ? kb.sections : {};
       return res.status(200).json({
         ok: true,
         tenant: payload,
         _debug: {
           kb_parts,
           kb_joined_len,
-          sections_keys: Object.keys((kb && kb.sections) || {}),
+          sections_keys: Object.keys(sections),
           sections_counts: Object.fromEntries(
-            Object.entries((kb && kb.sections) || {}).map(([k,v]) => [k, Array.isArray(v) ? v.length : 0])
+            Object.entries(sections).map(([k,v]) => [k, Array.isArray(v) ? v.length : 0])
           ),
         },
       });
