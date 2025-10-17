@@ -1,7 +1,5 @@
 // /api/demoAgent.js
-// Human-like demo assistant. Now supports:
-// 1) Direct KB (kb_json + company_system_prompt)  OR
-// 2) tenant + token  -> fetch KB from Google Sheets.
+// Uses LLM ONLY if kb_json.sections has content. Can fetch KB via tenant+token.
 
 module.exports.config = { runtime: "nodejs" };
 
@@ -11,7 +9,6 @@ const { google } = require("googleapis");
 const MAX_JSON_CHARS = 120000;
 const MODEL = process.env.OPENAI_AGENT_MODEL || "gpt-4o-mini";
 
-// ---------- token verify ----------
 function verifyToken(token) {
   if (!token) return null;
   const [tenant, expStr, sig] = String(token).split(".");
@@ -22,7 +19,7 @@ function verifyToken(token) {
   return chk === sig ? tenant : null;
 }
 
-// ---------- Google Sheets helpers ----------
+// ----- Sheets helpers -----
 function serviceAuth() {
   const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
   let key = process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
@@ -34,7 +31,7 @@ function serviceAuth() {
     scopes: ["https://www.googleapis.com/auth/spreadsheets.readonly"],
   });
 }
-async function readTenantsSheetAll() {
+async function readSheet() {
   const spreadsheetId = process.env.SHEET_ID;
   if (!spreadsheetId) throw new Error("SHEET_ID missing");
   const auth = serviceAuth();
@@ -44,34 +41,32 @@ async function readTenantsSheetAll() {
     range: "Tenants!A1:ZZ10000",
     valueRenderOption: "UNFORMATTED_VALUE",
   });
-  const rows = data.values || [];
-  const headers = rows[0] || [];
+  const headers = (data.values && data.values[0]) || [];
   const idx = Object.fromEntries(headers.map((h, i) => [h, i]));
-  const items = rows.slice(1).map((r) => {
-    const get = (k) => (idx[k] != null ? (r[idx[k]] ?? "") : "");
-    const obj = {};
-    headers.forEach((h) => (obj[h] = get(h)));
-    return obj;
+  const rows = (data.values || []).slice(1).map((r) => {
+    const o = {};
+    headers.forEach((h) => (o[h] = idx[h] != null ? (r[idx[h]] ?? "") : ""));
+    return o;
   });
-  return { headers, items };
+  return { headers, rows };
 }
-function parseJSONSafe(s) { try { return s ? JSON.parse(String(s)) : null; } catch { return null; } }
-function reassembleKbJson(headers, rowObj) {
-  const kbCols = headers
-    .filter((h) => /^kb_json(_\d+)?$/i.test(h))
+function parseJSONSafe(s){ try { return s ? JSON.parse(String(s)) : null; } catch { return null; } }
+function reassembleKb(headers, row) {
+  const cols = headers
+    .filter((h) => /^kb_json(?:_\d+)?$/i.test(h))
     .sort((a, b) => {
       const na = a === "kb_json" ? 0 : parseInt(a.split("_")[2] || a.split("_")[1] || "0", 10);
       const nb = b === "kb_json" ? 0 : parseInt(b.split("_")[2] || b.split("_")[1] || "0", 10);
       return na - nb;
     });
-  const joined = kbCols.map((h) => String(rowObj[h] || "")).join("");
-  return parseJSONSafe(joined) || parseJSONSafe(rowObj.kb_json) || {};
+  const joined = cols.map((c) => String(row[c] || "")).join("").replace(/^\uFEFF/, "").trim();
+  return parseJSONSafe(joined) || parseJSONSafe(row.kb_json) || {};
 }
 
-// ---------- Demo tables (fallbacks) ----------
-const mkTable = (columns, rows) => ({ format: "table", summary: "Demo numbers (connect for live data).", value: { columns, rows } });
-function buildAnswer(topic, kb) {
-  switch (topic) {
+// ----- Fallback demo tables -----
+const mkTable = (columns, rows) => ({ format:"table", summary:"Demo numbers (connect for live data).", value:{ columns, rows }});
+function buildAnswer(topic, kb){
+  switch(topic){
     case "inventory":
       return mkTable(["SKU","Product","On Hand","Reserved","Available"],[
         ["UH-001", kb?.example_top_product || "Ultra Hoodie", 820,120,700],
@@ -103,7 +98,7 @@ function textFromAnswer(a){
   return a?.value || "";
 }
 
-// ---------- Intent ----------
+// ----- Intent -----
 function detect(utterance=""){
   const u = utterance.toLowerCase();
   const wantsEmail   = /email|mail|correo/.test(u);
@@ -123,30 +118,36 @@ function detect(utterance=""){
 
   if (wantsCall)     return { intent:"place_call", topic:"generic" };
   if (wantsInvoice)  return { intent:"create_invoice", topic:"billing" };
+
   if (wantsInv)      return { intent:"inventory_lookup", topic:"inventory" };
   if (wantsHR)       return { intent:"hr_schedule", topic:"hr" };
   if (wantsRevenue||wantsReport) return { intent:"sales_report", topic:"revenue" };
+
   return { intent:"generic_question", topic:"generic" };
 }
 
-// ---------- LLM ----------
+// ----- LLM -----
 function briefFromKB(kb) {
-  if (!kb || typeof kb !== "object") return "No KB loaded.";
-  const meta = kb.meta || {};
+  const meta = kb?.meta || {};
   const co = meta.company || {};
-  const sections = kb.sections || {};
+  const sections = kb?.sections || {};
   const counts = Object.fromEntries(Object.entries(sections).map(([k,v]) => [k, Array.isArray(v)? v.length:0]));
-  const lines = [
+  return [
     `Company: ${co.name || "unknown"} (${co.domain || "unknown"})`,
     `Homepage: ${co.homepage_url || "unknown"}`,
     `KB version: ${meta.kb_version || "unknown"}`,
-    `Sections: ${Object.entries(counts).map(([k,n]) => `${k}(${n})`).join(", ") || "none"}`
-  ];
-  return lines.join("\n");
+    `Sections: ${Object.entries(counts).map(([k,n]) => `${k}(${n})`).join(", ") || "none"}`,
+  ].join("\n");
+}
+function kbLooksPopulated(kb){
+  if (!kb || typeof kb !== "object") return false;
+  const s = kb.sections || {};
+  return Object.values(s).some((arr) => Array.isArray(arr) && arr.length > 0);
 }
 async function kbAnswerWithLLM({ kb_json, company_system_prompt, user, history=[], mode="text" }) {
   if (!process.env.OPENAI_API_KEY) return null;
-  if (!kb_json || !company_system_prompt) return null;
+  if (!company_system_prompt) return null;
+  if (!kbLooksPopulated(kb_json)) return null; // <<— require real KB
 
   const kbRaw = JSON.stringify(kb_json);
   const kbTrunc = kbRaw.length > MAX_JSON_CHARS ? (kbRaw.slice(0, MAX_JSON_CHARS) + "\n/*[truncated]*/") : kbRaw;
@@ -164,7 +165,7 @@ async function kbAnswerWithLLM({ kb_json, company_system_prompt, user, history=[
     { role:"system", content: "KB_JSON:\n" + kbTrunc },
     ...histMsgs,
     { role:"user", content: `User mode: ${mode}\n\n${user}` },
-    { role:"system", content: "Rules: Use ONLY KB evidence where possible; if missing, state a careful inference with confidence (high/medium/low). Keep answers concise and practical. Cite section keys / URLs used." }
+    { role:"system", content: "Rules: Use ONLY KB evidence. If a fact is missing from KB, say so. Cite section keys and include fragment.src_url when available." }
   ];
 
   const r = await fetch("https://api.openai.com/v1/chat/completions",{
@@ -175,11 +176,10 @@ async function kbAnswerWithLLM({ kb_json, company_system_prompt, user, history=[
   if (!r.ok) return null;
   const j = await r.json().catch(()=>null);
   const text = j?.choices?.[0]?.message?.content?.trim();
-  if (!text) return null;
-  return text;
+  return text || null;
 }
 
-// ---------- Helpers ----------
+// ----- Helpers -----
 async function postJSON(baseUrl, path, payload){
   const r = await fetch(`${baseUrl}${path}`,{
     method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify(payload)
@@ -188,141 +188,6 @@ async function postJSON(baseUrl, path, payload){
   if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
   return j;
 }
-
-// ---------- Main ----------
-module.exports = async (req, res) => {
-  if (req.method !== "POST") return res.status(405).json({ ok:false, error:"Method Not Allowed" });
-
-  try{
-    const body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body||{});
-    let {
-      utterance="", kb={}, client={}, mode="text", response_to,
-      kb_json=null, company_system_prompt=null, history=[],
-      tenant=null, token=null
-    } = body;
-
-    // If tenant+token provided, fetch KB from sheet (UI can send just tenant+token)
-    if ((!kb_json || !company_system_prompt) && tenant && token) {
-      const validT = verifyToken(token);
-      if (validT === tenant) {
-        const { headers, items } = await readTenantsSheetAll();
-        const row = items.find((r) => String(r.tenant_id) === String(tenant));
-        if (row) {
-          kb_json = reassembleKbJson(headers, row);
-          company_system_prompt = row.company_system_prompt || company_system_prompt;
-        }
-      }
-    }
-
-    // Try LLM first if KB + system prompt are present
-    const { intent, topic } = detect(utterance);
-    let llmText = null;
-    try {
-      llmText = await kbAnswerWithLLM({ kb_json, company_system_prompt, user: utterance, history, mode });
-    } catch (_) {}
-
-    if (llmText) {
-      return res.status(200).json({
-        mode,
-        script: [{ text: llmText }],
-        cards: [],
-        meta: { intent: "kb_answer", topic, trace_id: "demo_" + Math.random().toString(36).slice(2,10), used_llm: true }
-      });
-    }
-
-    // ---- FALLBACK deterministic demo flow ----
-    const answer = buildAnswer(topic, kb);
-    const proto = req.headers["x-forwarded-proto"] || "https";
-    const baseUrl = `${proto}://${req.headers.host}`;
-
-    const script = [];
-    const cards  = [];
-    const say = (text, delay=0) => script.push({ text, delay_ms: delay });
-
-    if (intent === "inventory_lookup") {
-      say("Sure — opening Inventory → Stock Check…", 0);
-      say("Give me a second to pull live counts…", 600);
-      say(`Found it.`, 700);
-      cards.push(answer);
-    } else if (intent === "sales_report") {
-      say("On it — fetching Sales → Weekly Revenue…", 0);
-      say("Compiling the last two weeks…", 700);
-      say("Ready.", 600);
-      cards.push(answer);
-    } else if (intent === "hr_schedule") {
-      say("Opening HR → Time Off…", 0);
-      say("Checking upcoming vacations…", 600);
-      cards.push(answer);
-    } else if (intent === "create_invoice") {
-      const ctx = "demo_" + Math.random().toString(36).slice(2,10);
-      say("Absolutely — I’ll prepare the invoice for Mr. Martin.", 0);
-      say("I’ll grab recent work items and fill the template.", 700);
-      say("Where should I send it?", 600);
-      return res.status(200).json({
-        mode,
-        script,
-        ask: {
-          context_id: ctx,
-          question: "Send the invoice via…",
-          options: [
-            { id:"whatsapp", label:"WhatsApp" },
-            { id:"email",    label:"Email" }
-          ],
-          requires: {}
-        },
-        meta: { intent, topic, trace_id: ctx }
-      });
-    }
-
-    // Deliver actions
-    const phone = (client.phone || kb?.demo_client?.phone || "").trim();
-    const email = (client.email || kb?.demo_client?.email || "").trim();
-    let performed = null;
-    try{
-      if (intent === "send_email") {
-        if (!email) throw new Error("No email on file");
-        say("Sure — packaging the report and sending email…", 0);
-        await postJSON(baseUrl, "/api/sendMailgun", {
-          to: email, subject: `Your ${topic} report`, html: htmlFrom(answer, "email")
-        });
-        say(`Done — sent to ${email}.`, 900);
-        performed = { ok:true, type:"email", to:email };
-      } else if (intent === "send_whatsapp") {
-        if (!phone) throw new Error("No phone on file");
-        say("Got it — composing WhatsApp message…", 0);
-        await postJSON(baseUrl, "/api/sendWhatsApp", {
-          to: phone, body: `Your ${topic} report:\n\n${textFromAnswer(answer)}`
-        });
-        say(`Sent on WhatsApp to ${phone}.`, 900);
-        performed = { ok:true, type:"whatsapp", to:phone };
-      } else if (intent === "place_call") {
-        if (!phone) throw new Error("No phone on file");
-        say("Okay — placing a quick follow-up call…", 0);
-        await postJSON(baseUrl, "/api/call", {
-          to: phone, message: `This is your AI Employee with your ${topic} update. I also sent details to your inbox.`
-        });
-        say(`Calling ${phone} now.`, 900);
-        performed = { ok:true, type:"call", to:phone };
-      }
-    } catch (e) {
-      say(`Action failed: ${String(e.message||e)}.`, 0);
-      performed = { ok:false, error:String(e.message||e) };
-    }
-
-    const response = {
-      mode,
-      script: script.length ? script : [{ text:"Here’s what I found.", delay_ms:0 }],
-      cards:  (mode==="call") ? [] : (cards.length ? cards : [answer]),
-      meta: { intent, topic, trace_id: "demo_" + Math.random().toString(36).slice(2,10), performed, used_llm: false }
-    };
-    return res.status(200).json(response);
-
-  } catch (e) {
-    return res.status(500).json({ ok:false, error:String(e?.message||e) });
-  }
-};
-
-// --- helpers for email HTML
 function htmlFrom(answer, title="Report"){
   if (answer?.format === "table") {
     const { columns, rows } = answer.value;
@@ -336,3 +201,97 @@ function htmlFrom(answer, title="Report"){
   }
   return `<p>${answer?.value || ""}</p>`;
 }
+
+// ----- Main handler -----
+module.exports = async (req, res) => {
+  if (req.method !== "POST") return res.status(405).json({ ok:false, error:"Method Not Allowed" });
+
+  try{
+    const body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body||{});
+    let {
+      utterance="", kb={}, client={}, mode="text", history=[],
+      kb_json=null, company_system_prompt=null,
+      tenant=null, token=null
+    } = body;
+
+    // If tenant+token present, fetch KB from sheet
+    if (tenant && token && (!kb_json || !company_system_prompt || !kbLooksPopulated(kb_json))) {
+      const v = verifyToken(token);
+      if (v === tenant) {
+        const { headers, rows } = await readSheet();
+        const row = rows.find((r) => String(r.tenant_id) === String(tenant));
+        if (row) {
+          kb_json = reassembleKb(headers, row);
+          company_system_prompt = row.company_system_prompt || company_system_prompt;
+        }
+      }
+    }
+
+    const { intent, topic } = detect(utterance);
+
+    // LLM path only if KB looks non-empty
+    let llmText = null;
+    try { llmText = await kbAnswerWithLLM({ kb_json, company_system_prompt, user: utterance, history, mode }); } catch {}
+
+    if (llmText) {
+      return res.status(200).json({
+        mode,
+        script: [{ text: llmText }],
+        cards: [],
+        meta: { intent: "kb_answer", topic, trace_id: "demo_"+Math.random().toString(36).slice(2,10), used_llm: true }
+      });
+    }
+
+    // FALLBACK demo flow
+    const answer = buildAnswer(topic, kb);
+    const proto = req.headers["x-forwarded-proto"] || "https";
+    const baseUrl = `${proto}://${req.headers.host}`;
+
+    const script = [];
+    const cards  = [];
+    const say = (t, d=0) => script.push({ text:t, delay_ms:d });
+
+    if (intent === "inventory_lookup") { say("Sure — opening Inventory → Stock Check…", 0); say("Give me a second to pull live counts…", 600); say(`Found it.`, 700); cards.push(answer); }
+    else if (intent === "sales_report") { say("On it — fetching Sales → Weekly Revenue…", 0); say("Compiling the last two weeks…", 700); say("Ready.", 600); cards.push(answer); }
+    else if (intent === "hr_schedule") { say("Opening HR → Time Off…", 0); say("Checking upcoming vacations…", 600); cards.push(answer); }
+
+    // Actions
+    const phone = (client.phone || kb?.demo_client?.phone || "").trim();
+    const email = (client.email || kb?.demo_client?.email || "").trim();
+    let performed = null;
+    try {
+      if (intent === "send_email") {
+        if (!email) throw new Error("No email on file");
+        say("Sure — packaging the report and sending email…", 0);
+        await postJSON(baseUrl, "/api/sendMailgun", { to: email, subject: `Your ${topic} report`, html: htmlFrom(answer, "email") });
+        say(`Done — sent to ${email}.`, 900);
+        performed = { ok:true, type:"email", to:email };
+      } else if (intent === "send_whatsapp") {
+        if (!phone) throw new Error("No phone on file");
+        say("Got it — composing WhatsApp message…", 0);
+        await postJSON(baseUrl, "/api/sendWhatsApp", { to: phone, body: `Your ${topic} report:\n\n${textFromAnswer(answer)}` });
+        say(`Sent on WhatsApp to ${phone}.`, 900);
+        performed = { ok:true, type:"whatsapp", to:phone };
+      } else if (intent === "place_call") {
+        if (!phone) throw new Error("No phone on file");
+        say("Okay — placing a quick follow-up call…", 0);
+        await postJSON(baseUrl, "/api/call", { to: phone, message: `This is your AI Employee with your ${topic} update. I also sent details to your inbox.` });
+        say(`Calling ${phone} now.`, 900);
+        performed = { ok:true, type:"call", to:phone };
+      }
+    } catch (e) {
+      say(`Action failed: ${String(e.message||e)}.`, 0);
+      performed = { ok:false, error:String(e.message||e) };
+    }
+
+    return res.status(200).json({
+      mode,
+      script: script.length ? script : [{ text:"Here’s what I found.", delay_ms:0 }],
+      cards:  (mode==="call") ? [] : (cards.length ? cards : [answer]),
+      meta: { intent, topic, trace_id: "demo_"+Math.random().toString(36).slice(2,10), performed, used_llm: false }
+    });
+
+  } catch (e) {
+    return res.status(500).json({ ok:false, error:String(e?.message||e) });
+  }
+};
