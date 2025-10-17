@@ -1,5 +1,5 @@
 // /api/demoAgent.js
-// Uses LLM ONLY if kb_json.sections has content. Can fetch KB via tenant+token.
+// Will fetch KB via tenant+token, reassemble with salvage, and only use LLM when sections are populated.
 
 module.exports.config = { runtime: "nodejs" };
 
@@ -9,6 +9,7 @@ const { google } = require("googleapis");
 const MAX_JSON_CHARS = 120000;
 const MODEL = process.env.OPENAI_AGENT_MODEL || "gpt-4o-mini";
 
+// ---------- token ----------
 function verifyToken(token) {
   if (!token) return null;
   const [tenant, expStr, sig] = String(token).split(".");
@@ -19,7 +20,7 @@ function verifyToken(token) {
   return chk === sig ? tenant : null;
 }
 
-// ----- Sheets helpers -----
+// ---------- Sheets ----------
 function serviceAuth() {
   const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
   let key = process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
@@ -38,7 +39,7 @@ async function readSheet() {
   const sheets = google.sheets({ version: "v4", auth });
   const { data } = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: "Tenants!A1:ZZ10000",
+    range: "Tenants!A1:ZZ100000",
     valueRenderOption: "UNFORMATTED_VALUE",
   });
   const headers = (data.values && data.values[0]) || [];
@@ -50,8 +51,36 @@ async function readSheet() {
   });
   return { headers, rows };
 }
+
+// ---------- reassembler (same salvage as tenantGet) ----------
 function parseJSONSafe(s){ try { return s ? JSON.parse(String(s)) : null; } catch { return null; } }
-function reassembleKb(headers, row) {
+function hardClean(str){
+  return String(str || "")
+    .replace(/^\uFEFF/, "")
+    .replace(/\u0000/g, "")
+    .replace(/\u201C|\u201D/g, '"')
+    .replace(/\u2018|\u2019/g, "'")
+    .replace(/\r/g, "");
+}
+function unwrapIfDoubleEncoded(s){
+  const first = parseJSONSafe(s);
+  if (typeof first === "string") {
+    const second = parseJSONSafe(first);
+    if (second && typeof second === "object") return second;
+  }
+  return null;
+}
+function extractBracedJSON(s){
+  const start = s.indexOf("{");
+  const end   = s.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    const sub = s.slice(start, end + 1);
+    const obj = parseJSONSafe(sub);
+    if (obj && typeof obj === "object") return obj;
+  }
+  return null;
+}
+function reassembleKb(headers, row){
   const cols = headers
     .filter((h) => /^kb_json(?:_\d+)?$/i.test(h))
     .sort((a, b) => {
@@ -59,35 +88,34 @@ function reassembleKb(headers, row) {
       const nb = b === "kb_json" ? 0 : parseInt(b.split("_")[2] || b.split("_")[1] || "0", 10);
       return na - nb;
     });
-  const joined = cols.map((c) => String(row[c] || "")).join("").replace(/^\uFEFF/, "").trim();
-  return parseJSONSafe(joined) || parseJSONSafe(row.kb_json) || {};
+  const joined = hardClean(cols.map((c)=>String(row[c]||"")).join("")).trim();
+  let kb = parseJSONSafe(joined) || unwrapIfDoubleEncoded(joined) || extractBracedJSON(joined);
+  if (!kb || typeof kb !== "object") kb = parseJSONSafe(hardClean(row.kb_json));
+  if (!kb || typeof kb !== "object") kb = {};
+  return kb;
 }
 
-// ----- Fallback demo tables -----
+// ---------- demo fallbacks ----------
 const mkTable = (columns, rows) => ({ format:"table", summary:"Demo numbers (connect for live data).", value:{ columns, rows }});
 function buildAnswer(topic, kb){
   switch(topic){
-    case "inventory":
-      return mkTable(["SKU","Product","On Hand","Reserved","Available"],[
-        ["UH-001", kb?.example_top_product || "Ultra Hoodie", 820,120,700],
-        ["BT-099","Basic Tee",1450,260,1190],
-        ["CP-223","Classic Polo",680,90,590]
-      ]);
-    case "hr":
-      return mkTable(["Employee","From","To","Type"],[
-        [kb?.example_employee_1||"C. Alvarez","2025-07-08","2025-07-16","Vacation"],
-        [kb?.example_employee_2||"M. Duarte","2025-07-11","2025-07-12","PTO"],
-        [kb?.example_employee_3||"S. Ruiz",   "2025-07-22","2025-07-29","Vacation"]
-      ]);
+    case "inventory": return mkTable(["SKU","Product","On Hand","Reserved","Available"],[
+      ["UH-001", kb?.example_top_product || "Ultra Hoodie", 820,120,700],
+      ["BT-099","Basic Tee",1450,260,1190],
+      ["CP-223","Classic Polo",680,90,590]
+    ]);
+    case "hr": return mkTable(["Employee","From","To","Type"],[
+      [kb?.example_employee_1||"C. Alvarez","2025-07-08","2025-07-16","Vacation"],
+      [kb?.example_employee_2||"M. Duarte","2025-07-11","2025-07-12","PTO"],
+      [kb?.example_employee_3||"S. Ruiz","2025-07-22","2025-07-29","Vacation"]
+    ]);
     case "revenue":
-    case "report":
-      return mkTable(["Week","Region","Channel","Revenue (€)"],[
-        ["W-2", kb?.example_top_region||"Andalucía","Online",58210],
-        ["W-2", kb?.primary_region    ||"Marbella", "Retail",39400],
-        ["W-1", kb?.example_top_region||"Andalucía","Online",54730]
-      ]);
-    default:
-      return { format:"text", value:"Once connected, I’d pull this live and complete the task automatically." };
+    case "report": return mkTable(["Week","Region","Channel","Revenue (€)"],[
+      ["W-2", kb?.example_top_region||"Andalucía","Online",58210],
+      ["W-2", kb?.primary_region    ||"Marbella","Retail",39400],
+      ["W-1", kb?.example_top_region||"Andalucía","Online",54730]
+    ]);
+    default: return { format:"text", value:"Once connected, I’d pull this live and complete the task automatically." };
   }
 }
 function textFromAnswer(a){
@@ -98,7 +126,7 @@ function textFromAnswer(a){
   return a?.value || "";
 }
 
-// ----- Intent -----
+// ---------- intent ----------
 function detect(utterance=""){
   const u = utterance.toLowerCase();
   const wantsEmail   = /email|mail|correo/.test(u);
@@ -126,7 +154,12 @@ function detect(utterance=""){
   return { intent:"generic_question", topic:"generic" };
 }
 
-// ----- LLM -----
+// ---------- LLM ----------
+function kbLooksPopulated(kb){
+  if (!kb || typeof kb !== "object") return false;
+  const s = kb.sections || {};
+  return Object.values(s).some((arr) => Array.isArray(arr) && arr.length > 0);
+}
 function briefFromKB(kb) {
   const meta = kb?.meta || {};
   const co = meta.company || {};
@@ -139,15 +172,10 @@ function briefFromKB(kb) {
     `Sections: ${Object.entries(counts).map(([k,n]) => `${k}(${n})`).join(", ") || "none"}`,
   ].join("\n");
 }
-function kbLooksPopulated(kb){
-  if (!kb || typeof kb !== "object") return false;
-  const s = kb.sections || {};
-  return Object.values(s).some((arr) => Array.isArray(arr) && arr.length > 0);
-}
 async function kbAnswerWithLLM({ kb_json, company_system_prompt, user, history=[], mode="text" }) {
   if (!process.env.OPENAI_API_KEY) return null;
   if (!company_system_prompt) return null;
-  if (!kbLooksPopulated(kb_json)) return null; // <<— require real KB
+  if (!kbLooksPopulated(kb_json)) return null;
 
   const kbRaw = JSON.stringify(kb_json);
   const kbTrunc = kbRaw.length > MAX_JSON_CHARS ? (kbRaw.slice(0, MAX_JSON_CHARS) + "\n/*[truncated]*/") : kbRaw;
@@ -165,7 +193,7 @@ async function kbAnswerWithLLM({ kb_json, company_system_prompt, user, history=[
     { role:"system", content: "KB_JSON:\n" + kbTrunc },
     ...histMsgs,
     { role:"user", content: `User mode: ${mode}\n\n${user}` },
-    { role:"system", content: "Rules: Use ONLY KB evidence. If a fact is missing from KB, say so. Cite section keys and include fragment.src_url when available." }
+    { role:"system", content: "Use ONLY the KB evidence. If a fact is missing, say so. Cite section keys and include fragment.src_url when available." }
   ];
 
   const r = await fetch("https://api.openai.com/v1/chat/completions",{
@@ -179,7 +207,7 @@ async function kbAnswerWithLLM({ kb_json, company_system_prompt, user, history=[
   return text || null;
 }
 
-// ----- Helpers -----
+// ---------- helpers ----------
 async function postJSON(baseUrl, path, payload){
   const r = await fetch(`${baseUrl}${path}`,{
     method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify(payload)
@@ -202,7 +230,7 @@ function htmlFrom(answer, title="Report"){
   return `<p>${answer?.value || ""}</p>`;
 }
 
-// ----- Main handler -----
+// ---------- main ----------
 module.exports = async (req, res) => {
   if (req.method !== "POST") return res.status(405).json({ ok:false, error:"Method Not Allowed" });
 
@@ -210,11 +238,10 @@ module.exports = async (req, res) => {
     const body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body||{});
     let {
       utterance="", kb={}, client={}, mode="text", history=[],
-      kb_json=null, company_system_prompt=null,
-      tenant=null, token=null
+      kb_json=null, company_system_prompt=null, tenant=null, token=null
     } = body;
 
-    // If tenant+token present, fetch KB from sheet
+    // Fetch KB from sheet if tenant+token provided or kb_json empty
     if (tenant && token && (!kb_json || !company_system_prompt || !kbLooksPopulated(kb_json))) {
       const v = verifyToken(token);
       if (v === tenant) {
@@ -229,10 +256,9 @@ module.exports = async (req, res) => {
 
     const { intent, topic } = detect(utterance);
 
-    // LLM path only if KB looks non-empty
+    // LLM path (only if KB has sections)
     let llmText = null;
     try { llmText = await kbAnswerWithLLM({ kb_json, company_system_prompt, user: utterance, history, mode }); } catch {}
-
     if (llmText) {
       return res.status(200).json({
         mode,
@@ -242,7 +268,7 @@ module.exports = async (req, res) => {
       });
     }
 
-    // FALLBACK demo flow
+    // FALLBACK demo flows
     const answer = buildAnswer(topic, kb);
     const proto = req.headers["x-forwarded-proto"] || "https";
     const baseUrl = `${proto}://${req.headers.host}`;
@@ -255,7 +281,6 @@ module.exports = async (req, res) => {
     else if (intent === "sales_report") { say("On it — fetching Sales → Weekly Revenue…", 0); say("Compiling the last two weeks…", 700); say("Ready.", 600); cards.push(answer); }
     else if (intent === "hr_schedule") { say("Opening HR → Time Off…", 0); say("Checking upcoming vacations…", 600); cards.push(answer); }
 
-    // Actions
     const phone = (client.phone || kb?.demo_client?.phone || "").trim();
     const email = (client.email || kb?.demo_client?.email || "").trim();
     let performed = null;
