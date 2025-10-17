@@ -1,72 +1,116 @@
-// api/tenantGet.js
-// Reads tenant row from Google Sheets.
-// Reassembles large KBs from kb_json_1..kb_json_6 if kb_json is empty.
+// /api/tenantGet.js
+// Vercel nodejs runtime (CommonJS). Uses googleapis (not google-spreadsheet).
 
-module.exports.config = { runtime: "nodejs20.x" };
+module.exports.config = { runtime: "nodejs" };
 
-const CHUNK_HEADERS = ["kb_json_1","kb_json_2","kb_json_3","kb_json_4","kb_json_5","kb_json_6"];
+const crypto = require("node:crypto");
+const { google } = require("googleapis");
 
-function verifyDev({ token, tenant }) {
-  if (!token || !tenant) return false;
-  const [t, expStr, sig] = String(token).split('.');
+// ---------- token verify (same contract as /api/demoLink) ----------
+function verifyToken(token) {
+  if (!token) return null;
+  const [tenant, expStr, sig] = String(token).split(".");
   const exp = parseInt(expStr, 10);
-  if (!t || t !== tenant) return false;
-  if (!Number.isFinite(exp) || exp < Math.floor(Date.now() / 1000)) return false;
-  return true; // DEV token (no signature)
+  if (!tenant || !exp || exp < Math.floor(Date.now() / 1000)) return null;
+  const raw = `${tenant}.${exp}.${process.env.DEMO_SECRET}`;
+  const chk = crypto.createHash("sha256").update(raw).digest("base64url");
+  return chk === sig ? tenant : null;
 }
 
-function safeJSON(str, fb) {
-  try { return str ? JSON.parse(str) : fb; } catch { return fb; }
+// ---------- Google Sheets helpers ----------
+function serviceAuth() {
+  const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
+  let key = process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
+  if (!email || !key) throw new Error("Google service account not configured");
+  key = key.replace(/\\n/g, "\n");
+  return new google.auth.JWT({
+    email,
+    key,
+    scopes: ["https://www.googleapis.com/auth/spreadsheets.readonly"],
+  });
+}
+
+async function readTenantsSheetAll() {
+  const spreadsheetId = process.env.SHEET_ID;
+  if (!spreadsheetId) throw new Error("SHEET_ID missing");
+  const auth = serviceAuth();
+  const sheets = google.sheets({ version: "v4", auth });
+
+  // Read a wide range to include added columns (A:ZZ)
+  const { data } = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: "Tenants!A1:ZZ10000",
+    valueRenderOption: "UNFORMATTED_VALUE",
+  });
+  const rows = data.values || [];
+  const headers = rows[0] || [];
+  const idx = Object.fromEntries(headers.map((h, i) => [h, i]));
+  const items = rows.slice(1).map((r) => {
+    const get = (k) => (idx[k] != null ? (r[idx[k]] ?? "") : "");
+    const obj = {};
+    headers.forEach((h) => (obj[h] = get(h)));
+    return obj;
+  });
+  return { headers, items };
+}
+
+function parseJSONSafe(s) {
+  if (!s) return null;
+  try { return JSON.parse(String(s)); } catch { return null; }
+}
+
+// Concatenate kb_json, kb_json_1, kb_json_2 … into one big string and parse
+function reassembleKbJson(headers, rowObj) {
+  const kbCols = headers
+    .filter((h) => /^kb_json(_\d+)?$/i.test(h))
+    .sort((a, b) => {
+      const na = a === "kb_json" ? 0 : parseInt(a.split("_")[2] || a.split("_")[1] || "0", 10);
+      const nb = b === "kb_json" ? 0 : parseInt(b.split("_")[2] || b.split("_")[1] || "0", 10);
+      return na - nb;
+    });
+
+  const parts = kbCols.map((h) => String(rowObj[h] || ""));
+  const joined = parts.join("");
+  const kb = parseJSONSafe(joined) || parseJSONSafe(rowObj.kb_json) || {};
+  return kb;
 }
 
 module.exports = async (req, res) => {
-  if (req.method !== 'GET') { res.status(405).json({ ok:false, error:'GET only' }); return; }
-
   try {
-    const q = req.query || {};
-    const tenant = q.tenant || q.tenant_id || '';
-    const token  = q.token  || '';
-
-    if (!verifyDev({ token, tenant })) { res.status(401).json({ ok:false, error:'invalid token' }); return; }
-
-    let openTenantsSheet;
-    try { ({ openTenantsSheet } = require('./_lib/sheets')); }
-    catch (e) { res.status(500).json({ ok:false, error:'sheets_module_load_failed', detail:String(e?.message || e) }); return; }
-
-    let sheet;
-    try { sheet = await openTenantsSheet(); }
-    catch (e) { res.status(500).json({ ok:false, error:'sheet_open_failed', detail:String(e?.message || e) }); return; }
-
-    let rows;
-    try { rows = await sheet.getRows({ query: `tenant_id = "${tenant}"` }); }
-    catch (e) { res.status(500).json({ ok:false, error:'sheet_query_failed', detail:String(e?.message || e) }); return; }
-
-    if (!rows || !rows.length) { res.status(404).json({ ok:false, error:'not_found' }); return; }
-
-    const r = rows[0];
-    // Prefer main kb_json if present, otherwise stitch chunks
-    let kb_json_raw = r.get('kb_json') || '';
-    if (!kb_json_raw) {
-      kb_json_raw = CHUNK_HEADERS.map(h => r.get(h) || '').join('');
+    if (req.method !== "GET") {
+      return res.status(405).json({ ok: false, error: "GET only" });
     }
-    const kb_json = safeJSON(kb_json_raw, {});
 
-    res.status(200).json({
-      ok: true,
-      tenant: {
-        tenant_id: r.get('tenant_id'),
-        company_id: r.get('company_id'),
-        company_name: r.get('company_name'),
-        domain: r.get('domain'),
-        homepage_url: r.get('homepage_url'),
-        kb_version: r.get('kb_version'),
-        kb_sources: safeJSON(r.get('kb_sources_json'), []),
-        kb_json,
-        company_system_prompt: r.get('company_system_prompt'),
-        updated_at: r.get('updated_at'),
-      }
-    });
+    const { tenant, token } = req.query || {};
+    const validT = verifyToken(token);
+    if (validT !== tenant) {
+      return res.status(401).json({ ok: false, error: "invalid token" });
+    }
+
+    const { headers, items } = await readTenantsSheetAll();
+    const row = items.find((r) => String(r.tenant_id) === String(tenant));
+    if (!row) return res.status(404).json({ ok: false, error: "not found" });
+
+    const payload = {
+      tenant_id: row.tenant_id || "",
+      company_id: row.company_id || "",
+      company_name: row.company_name || "",
+      domain: row.domain || "",
+      homepage_url: row.homepage_url || "",
+      kb_version: row.kb_version || "",
+      demo_url: row.demo_url || "",
+      kb_sources: parseJSONSafe(row.kb_sources_json) || [],
+      kb_json: reassembleKbJson(headers, row),
+      company_system_prompt: row.company_system_prompt || "",
+      updated_at: row.updated_at || "",
+    };
+
+    return res.status(200).json({ ok: true, tenant: payload });
   } catch (e) {
-    res.status(500).json({ ok:false, error:'server_error', detail:String(e?.message || e) });
+    return res.status(500).json({
+      ok: false,
+      error: "sheet_read_failed",
+      detail: String(e?.message || e),
+    });
   }
 };
