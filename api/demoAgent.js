@@ -1,5 +1,5 @@
 // /api/demoAgent.js
-// Will fetch KB via tenant+token, reassemble with salvage, and only use LLM when sections are populated.
+// Fetches KB (with the same per-chunk dequoting), then uses LLM only if sections exist.
 
 module.exports.config = { runtime: "nodejs" };
 
@@ -52,7 +52,7 @@ async function readSheet() {
   return { headers, rows };
 }
 
-// ---------- reassembler (same salvage as tenantGet) ----------
+// ---------- reassembler (same as tenantGet) ----------
 function parseJSONSafe(s){ try { return s ? JSON.parse(String(s)) : null; } catch { return null; } }
 function hardClean(str){
   return String(str || "")
@@ -61,6 +61,14 @@ function hardClean(str){
     .replace(/\u201C|\u201D/g, '"')
     .replace(/\u2018|\u2019/g, "'")
     .replace(/\r/g, "");
+}
+function dequoteChunk(raw){
+  let s = hardClean(String(raw||"")).trim();
+  if (s.startsWith("=")) s = s.slice(1).trim();
+  if (s.startsWith('"') && !s.startsWith('""')) s = s.slice(1);
+  if (s.endsWith('"')   && !s.endsWith('\\"'))  s = s.slice(0, -1);
+  s = s.replace(/""/g, '"');
+  return s;
 }
 function unwrapIfDoubleEncoded(s){
   const first = parseJSONSafe(s);
@@ -88,9 +96,9 @@ function reassembleKb(headers, row){
       const nb = b === "kb_json" ? 0 : parseInt(b.split("_")[2] || b.split("_")[1] || "0", 10);
       return na - nb;
     });
-  const joined = hardClean(cols.map((c)=>String(row[c]||"")).join("")).trim();
+  const joined = hardClean(cols.map((c)=>dequoteChunk(row[c]||"")).join("")).trim();
   let kb = parseJSONSafe(joined) || unwrapIfDoubleEncoded(joined) || extractBracedJSON(joined);
-  if (!kb || typeof kb !== "object") kb = parseJSONSafe(hardClean(row.kb_json));
+  if (!kb || typeof kb !== "object") kb = parseJSONSafe(hardClean(dequoteChunk(row.kb_json)));
   if (!kb || typeof kb !== "object") kb = {};
   return kb;
 }
@@ -241,8 +249,8 @@ module.exports = async (req, res) => {
       kb_json=null, company_system_prompt=null, tenant=null, token=null
     } = body;
 
-    // Fetch KB from sheet if tenant+token provided or kb_json empty
-    if (tenant && token && (!kb_json || !company_system_prompt || !kbLooksPopulated(kb_json))) {
+    // Fetch KB from sheet if needed
+    if (tenant && token && (!kb_json || !company_system_prompt)) {
       const v = verifyToken(token);
       if (v === tenant) {
         const { headers, rows } = await readSheet();
@@ -317,6 +325,6 @@ module.exports = async (req, res) => {
     });
 
   } catch (e) {
-    return res.status(500).json({ ok:false, error:String(e?.message||e) });
+    return res.status(500).json({ ok:false, error:String(e?.message || e) });
   }
 };
