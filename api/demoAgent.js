@@ -1,18 +1,19 @@
 // /api/demoAgent.js
-// Universal assistant with context, planner, and slot-aware handlers (demo-ready).
+// Human-like assistant with context, planner, tool auto-detection + graceful demo fallbacks.
+// Works on Vercel (Node runtime). No external deps required.
 
 module.exports.config = { runtime: "nodejs" };
 
-/* ─────────── Utilities ─────────── */
+/* ───────────────────────── Utils ───────────────────────── */
 function traceId(){ return "trc_" + Math.random().toString(36).slice(2,10); }
 function nowISO(){ return new Date().toISOString(); }
-function currencyEUR(n){ try { return new Intl.NumberFormat('en-US',{style:'currency',currency:'EUR'}).format(n); } catch { return `€${(+n||0).toFixed(2)}`; } }
+function fmtEUR(n){ try { return new Intl.NumberFormat('en-US',{style:'currency',currency:'EUR'}).format(n); } catch { return `€${(+n||0).toFixed(2)}`; } }
 function okJSON(res, obj){ try{ res.setHeader("Content-Type","application/json"); }catch{} return res.status(200).json(obj); }
 function errJSON(res, msg){ try{ res.setHeader("Content-Type","application/json"); }catch{} return res.status(200).json({
   mode:"text",
-  script:[{ text:"Something went wrong — switched to demo mode.", delay_ms:0, show_role:true }],
+  script:[{ text:"Something went wrong — I switched to safe demo mode.", delay_ms:0, show_role:true }],
   cards:[{ format:"text", summary:"Error", value:String(msg) }],
-  meta:{ error:true, trace_id: traceId(), steps:["Caught error in /api/demoAgent, returned fallback."] }
+  meta:{ error:true, trace_id: traceId(), steps:["Caught error in /api/demoAgent; returned fallback."] }
 });}
 function readBody(req){
   try{
@@ -21,38 +22,119 @@ function readBody(req){
   }catch{}
   return {};
 }
-function bursts(...lines){
-  return lines.map((text,i)=>({ text, delay_ms: 300, show_role: i===0 }));
+function bursts(...lines){ return lines.map((text,i)=>({ text, delay_ms: 300, show_role: i===0 })); }
+function clamp(n,min,max){ return Math.min(max, Math.max(min, n)); }
+
+/* ───────────────────────── Tool auto-detection ─────────────────────────
+   Set any of these env vars to make the assistant try real tools first:
+   EMAIL_PROVIDER, WHATSAPP_PROVIDER, SMS_PROVIDER, VOICE_PROVIDER,
+   CAL_PROVIDER, DOC_PROVIDER, SHEET_PROVIDER, SLIDE_PROVIDER,
+   FILE_PROVIDER, PDF_PROVIDER, CRM_PROVIDER, BILLING_PROVIDER,
+   PAYMENT_PROVIDER, SEARCH_PROVIDER, BROWSER_PROVIDER, TASKS_PROVIDER,
+   TICKET_PROVIDER, INVENTORY_PROVIDER, ORDER_PROVIDER, SHIPPING_PROVIDER, KB_PROVIDER
+   Each tool is expected to be implemented behind /api/tools/<tool>.js (from your tool suite).
+*/
+const CAP = {
+  email:    !!process.env.EMAIL_PROVIDER,
+  whatsapp: !!process.env.WHATSAPP_PROVIDER,
+  sms:      !!process.env.SMS_PROVIDER,
+  voice:    !!process.env.VOICE_PROVIDER,
+  calendar: !!process.env.CAL_PROVIDER,
+  doc:      !!process.env.DOC_PROVIDER,
+  sheet:    !!process.env.SHEET_PROVIDER,
+  slide:    !!process.env.SLIDE_PROVIDER,
+  file:     !!process.env.FILE_PROVIDER,
+  pdf:      !!process.env.PDF_PROVIDER,
+  crm:      !!process.env.CRM_PROVIDER,
+  billing:  !!process.env.BILLING_PROVIDER,
+  pay:      !!process.env.PAYMENT_PROVIDER,
+  search:   !!process.env.SEARCH_PROVIDER,
+  browser:  !!process.env.BROWSER_PROVIDER,
+  tasks:    !!process.env.TASKS_PROVIDER,
+  ticket:   !!process.env.TICKET_PROVIDER,
+  inventory:!!process.env.INVENTORY_PROVIDER,
+  order:    !!process.env.ORDER_PROVIDER,
+  shipping: !!process.env.SHIPPING_PROVIDER,
+  kb:       !!process.env.KB_PROVIDER,
+};
+
+async function tryToolCall(req, path, payload, timeoutMs=9000){
+  // Calls internal tool endpoints like /api/tools/crm_find_contact etc.
+  // If route missing or fails, returns { ok:false, error }
+  const proto = req.headers["x-forwarded-proto"] || "https";
+  const baseUrl = `${proto}://${req.headers.host}`;
+  const ac = new AbortController();
+  const t = setTimeout(()=>ac.abort("timeout"), timeoutMs);
+  try{
+    const r = await fetch(`${baseUrl}${path}`,{
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify(payload||{}),
+      signal: ac.signal
+    });
+    clearTimeout(t);
+    const j = await r.json().catch(()=>({ ok:false, error:"Bad JSON" }));
+    if (!r.ok || j.ok === false) return { ok:false, error: j.error || `HTTP ${r.status}` };
+    return j;
+  }catch(e){
+    clearTimeout(t);
+    return { ok:false, error: String(e?.message || e) };
+  }
 }
 
-/* ─────────── Context store (in-memory; demo-safe) ─────────── */
-// For production, back this with Redis/Upstash or your DB. This demo uses a process Map.
-// Vercel serverless can cold start and lose state; acceptable for demo UX.
+/* ───────────────────────── Visual mocks (impactful) ───────────────────────── */
+function imgEmailPreview({to, subject}){
+  const title = encodeURIComponent(`Email to ${to||"Contact"}`);
+  const sub   = encodeURIComponent(subject||"Follow-up");
+  return `https://placehold.co/980x520/png?text=${title}%0A${sub}`;
+}
+function imgPDFMock(kind, id, who){
+  const text = encodeURIComponent(`${kind} ${id} · ${who||"Contact"}`);
+  return `https://placehold.co/980x1380/png?text=${text}`;
+}
+function imgCalendarCard({title, when}){
+  const txt = encodeURIComponent(`${title||"Event"}%0A${when||nowISO().slice(0,10)}`);
+  return `https://placehold.co/980x360/png?text=${txt}`;
+}
+function imgCRMCard({contact, note}){
+  const txt = encodeURIComponent(`${contact||"Contact"}%0A${note||"Activity logged"}`);
+  return `https://placehold.co/980x400/png?text=${txt}`;
+}
+function imgListingsGrid({title="Marbella · 5-bed · Sea view · 2000m²+"}={}){
+  const txt = encodeURIComponent(title);
+  return `https://placehold.co/980x640/png?text=${txt}`;
+}
+
+/* ───────────────────────── Context store ───────────────────────── */
 const CTX = new Map();
-function defaultCtx(){
+function newCtx(){
   return {
-    people: [],                // [{ name, email?, id? }]
-    current_contact: null,     // "Mr Robinson"
+    people: [],                     // [{name, email?, id?}]
+    current_contact: null,          // "Mr Martial"
+    tone: "professional",
     email: { to:null, subject:null, body:null, attachments:[] },
     quote: { contact:null, amount:null, currency:"EUR", pdf_url:null, id:null },
-    crm: { action:null, type:null, notes:null, due:null, status:"Open" },
-    requested: { email:false, quote:false, crm:false },
+    crm:   { action:null, type:null, notes:null, due:null, status:"Open" },
+    calendar: { title:null, start:null, end:null, location:"Google Meet" },
+    requested: { email:false, quote:false, crm:false, calendar:false, search:false },
+    last_plan: [],
+    pending: null,                  // { type: 'send_email'|'send_quote'|'create_event'|..., data:{} }
     last_updated: nowISO(),
   };
 }
-function loadCtx(session_id){
-  if (!CTX.has(session_id)) CTX.set(session_id, defaultCtx());
-  return CTX.get(session_id);
-}
+function loadCtx(session_id){ if (!CTX.has(session_id)) CTX.set(session_id, newCtx()); return CTX.get(session_id); }
 function saveCtx(session_id, ctx){ ctx.last_updated = nowISO(); CTX.set(session_id, ctx); }
 
-/* ─────────── Lightweight LLM (optional for general Q&A) ─────────── */
+/* ───────────────────────── Optional LLM for general Q&A ───────────────────────── */
 const MODEL = process.env.OPENAI_AGENT_MODEL || "gpt-4o-mini";
-async function maybeLLMAnswer({ company_system_prompt, user }){
+async function maybeLLMAnswer({ company_system_prompt, kb_json, user }){
   if (!process.env.OPENAI_API_KEY) return null;
-  if (!user) return null;
+  const sysParts = [];
+  if (company_system_prompt) sysParts.push(company_system_prompt);
+  const co = kb_json?.meta?.company;
+  if (co) sysParts.push(`Company profile: ${JSON.stringify(co).slice(0,800)}`);
   const messages = [
-    { role:"system", content: company_system_prompt || "You are a concise, helpful assistant. Prefer short, actionable answers." },
+    { role:"system", content: (sysParts.join("\n\n") || "You are a concise, helpful assistant. Use business context if available.") },
     { role:"user", content: user }
   ];
   try{
@@ -67,10 +149,13 @@ async function maybeLLMAnswer({ company_system_prompt, user }){
   }catch{ return null; }
 }
 
-/* ─────────── NER / Slot extraction ─────────── */
+/* ───────────────────────── NER / Slots / Coref ───────────────────────── */
 function extractName(utt=""){
-  const m = utt.match(/\b(Mr\.|Mrs\.|Ms\.|Dr\.)\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)/);
-  return m ? `${m[1]} ${m[2]}` : null;
+  const withTitle = utt.match(/\b(Mr\.|Mrs\.|Ms\.|Dr\.)\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)/);
+  if (withTitle) return `${withTitle[1]} ${withTitle[2]}`;
+  const bare = utt.match(/\b([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\b/);
+  // Very light heuristic: if a capitalized word appears and no current contact, accept it (avoid false positives for sentence start)
+  return bare ? bare[1] : null;
 }
 function extractAmountEUR(utt=""){
   const m = String(utt).match(/(\d[\d.,]*)\s*€|€\s*(\d[\d.,]*)/);
@@ -81,58 +166,74 @@ function extractAmountEUR(utt=""){
 }
 function resolvePronounToContact(utt, ctx){
   const lower = utt.toLowerCase();
-  if (/\b(him|her|them)\b/.test(lower) && ctx.current_contact) return ctx.current_contact;
+  if (/\b(him|her|them|client)\b/.test(lower) && ctx.current_contact) return ctx.current_contact;
   return null;
 }
+function ingestUtterance(utt, ctx){
+  const name = extractName(utt) || resolvePronounToContact(utt, ctx);
+  if (name){
+    if (!ctx.people.find(p => p.name.toLowerCase() === name.toLowerCase())) ctx.people.push({ name });
+    ctx.current_contact = name;
+    if (!ctx.quote.contact) ctx.quote.contact = name;
+  }
+  const amt = extractAmountEUR(utt);
+  if (amt) ctx.quote.amount = clamp(amt, 10, 10_000_000);
+}
 
-/* ─────────── Intent detection ─────────── */
+/* ───────────────────────── Intent detection ───────────────────────── */
 function detect(utt=""){
   const u = utt.toLowerCase();
   const intents = [];
-  // email prep/send
   if (/\b(email|e-mail|mail)\b/.test(u) && /\b(prepare|draft|write|compose|send)\b/.test(u)) intents.push("email_prepare");
-  // quote
   if (/\b(quote|proposal|estimate)\b/.test(u)) intents.push("quote_create");
-  // invoice (not used in example but supported)
   if (/\b(invoice|bill)\b/.test(u)) intents.push("invoice_create");
-  // crm log/update
   if (/\b(crm|update crm|log|activity|follow[- ]?up|note)\b/.test(u)) intents.push("crm_update");
-  // calendar
-  if (/\b(schedule|meeting|calendar|book)\b/.test(u)) intents.push("calendar_create_event");
-  // small talk
+  if (/\b(schedule|meeting|calendar|book|reminder)\b/.test(u)) intents.push("calendar_create_event");
+
+  // web search / browse (e.g., idealista)
+  if (/\b(search|find|look up|scan|scrape|crawl)\b/.test(u) || /\b(idealista|rightmove|booking|airbnb|tripadvisor)\b/.test(u))
+    intents.push("search_web");
+
+  // confirmations
+  if (/\b(send|create|confirm|yes|go ahead|please send|ship it)\b/.test(u)) intents.push("confirm_action");
+
   if (/\b(hi|hello|hey|what can you do|who are you)\b/.test(u)) intents.push("small_talk");
-  // default general Q
   if (intents.length===0) intents.push("general_question");
   return intents;
 }
 
-/* ─────────── Context updater from utterance ─────────── */
-function ingestUtteranceIntoCtx(utt, ctx){
-  const name = extractName(utt) || resolvePronounToContact(utt, ctx);
-  if (name){
-    // upsert
-    if (!ctx.people.find(p => p.name.toLowerCase() === name.toLowerCase())) {
-      ctx.people.push({ name });
+/* ───────────────────────── CRM enrichment (pre-task awareness) ───────────────────────── */
+async function enrichFromCRM(req, ctx, steps){
+  const contact = ctx.current_contact || ctx.quote.contact;
+  if (!contact) return;
+  if (CAP.crm){
+    const find = await tryToolCall(req, "/api/tools/crm_find_contact.js", { query: contact });
+    if (find?.ok && find?.contact){
+      const c = find.contact;
+      // update context
+      const p = ctx.people.find(p=>p.name.toLowerCase()===contact.toLowerCase());
+      if (p){ p.email = c.email||p.email; p.id = c.id||p.id; }
+      if (!ctx.email.to && c.email) ctx.email.to = c.email;
+      steps.push(`CRM: Found ${contact} (${c.email||"no email"})`);
+      const act = await tryToolCall(req, "/api/tools/crm_log_activity.js", { dry_run:true, contact_id:c.id, note:"Context check" });
+      if (act?.ok) steps.push("CRM: Retrieved latest activity (summary).");
+    } else {
+      steps.push("CRM: No direct match (using demo profile).");
     }
-    ctx.current_contact = name;
-    if (!ctx.email.to) ctx.email.to = null; // keep null until we know email
-    if (!ctx.quote.contact) ctx.quote.contact = name;
+  } else {
+    // demo enrichment
+    const p = ctx.people.find(p=>p.name.toLowerCase()===contact.toLowerCase());
+    if (p && !p.email) p.email = `${contact.replace(/\s+/g,'.').replace(/[^a-zA-Z.]/g,'').toLowerCase()}@example.com`;
+    if (!ctx.email.to && p?.email) ctx.email.to = p.email;
+    steps.push(`CRM (demo): Using ${contact} <${p?.email||"pending@crm"}>.`);
   }
-  const amt = extractAmountEUR(utt);
-  if (amt){ ctx.quote.amount = amt; }
-
-  // requested flags
-  const intents = detect(utt);
-  ctx.requested.email = ctx.requested.email || intents.includes("email_prepare");
-  ctx.requested.quote = ctx.requested.quote || intents.includes("quote_create");
-  ctx.requested.crm   = ctx.requested.crm   || intents.includes("crm_update");
-  return ctx;
 }
 
-/* ─────────── Slot-aware handlers ─────────── */
-function handleEmailPrepare(ctx){
+/* ───────────────────────── Handlers (tool-first, demo fallback) ───────────────────────── */
+function cardImage(summary, url){ return { format:"image", summary, value:{ url } }; }
+
+function handleEmailPrepare(ctx, steps){
   const contact = ctx.current_contact || ctx.quote.contact || "your client";
-  // sensible defaults
   if (!ctx.email.subject) ctx.email.subject = `Follow-up on our last conversation`;
   if (!ctx.email.body){
     ctx.email.body =
@@ -144,207 +245,302 @@ If everything looks good, I can proceed right away.
 Best regards,
 Your AI Employee`;
   }
-
-  const steps = [
-    `Prepared email draft to ${contact}.`,
-    "Inserted suggested subject and short, professional body.",
-  ];
-
-  // if quote already exists and has PDF, ensure attached
-  if (ctx.quote?.pdf_url && !ctx.email.attachments.find(a => a.url === ctx.quote.pdf_url)){
+  steps.push(`Email draft ready for ${contact}.`);
+  // If quote exists, attach
+  if (ctx.quote?.pdf_url && !ctx.email.attachments.find(a=>a.url===ctx.quote.pdf_url)){
     ctx.email.attachments.push({ name: `${ctx.quote.id||'Quote'}.pdf`, url: ctx.quote.pdf_url });
-    steps.push("Attached the quote PDF to the email.");
+    steps.push("Attached quote PDF to email.");
   }
-
-  const cardHtml = [
-    `<strong>To:</strong> ${ctx.email.to || `${contact} (email pending)`}`,
-    `<strong>Subject:</strong> ${ctx.email.subject}`,
-    `<pre style="white-space:pre-wrap;margin:8px 0 0 0">${ctx.email.body}</pre>`,
-    ctx.email.attachments.length ? (`<div style="margin-top:8px"><strong>Attachments:</strong> ${ctx.email.attachments.map(a=>a.name).join(", ")}</div>`) : ""
-  ].join("<br/>");
-
+  const previewImg = imgEmailPreview({ to: ctx.email.to || contact, subject: ctx.email.subject });
   return {
     script: bursts(
       `On it — I’ll draft the email to ${contact}.`,
       "Here’s a concise draft — edit anything and I’ll update."
     ),
-    cards: [{ format:"text", summary:"Email Draft", value: cardHtml }],
+    cards: [
+      cardImage("Email Preview (demo)", previewImg),
+      { format:"text", summary:"Email Draft (fields)", value:
+        `<strong>To:</strong> ${ctx.email.to || `${contact} (email pending)`}<br/>`+
+        `<strong>Subject:</strong> ${ctx.email.subject}<br/>`+
+        `<pre style="white-space:pre-wrap;margin:8px 0 0 0">${ctx.email.body}</pre>`+
+        (ctx.email.attachments.length?`<br/><strong>Attachments:</strong> ${ctx.email.attachments.map(a=>a.name).join(", ")}`:"")
+      }
+    ],
     ask: {
       context_id: traceId(),
       question: "Send the email now?",
-      options: [{id:"send",label:"Send"}, {id:"edit_subject",label:"Edit subject"}, {id:"edit_body",label:"Edit body"}]
-    },
-    steps
+      options: [{id:"send_email",label:"Send"}, {id:"edit_subject",label:"Edit subject"}, {id:"edit_body",label:"Edit body"}]
+    }
   };
 }
 
-function handleQuoteCreate(ctx){
+function handleQuoteCreate(ctx, steps){
   const contact = ctx.current_contact || ctx.quote.contact || "your client";
-  // keep demo deterministic per session by storing id once
   if (!ctx.quote.id) ctx.quote.id = "Q-" + Math.random().toString(36).slice(2,7).toUpperCase();
   if (!ctx.quote.amount) ctx.quote.amount = 3500;
   if (!ctx.quote.currency) ctx.quote.currency = "EUR";
-  if (!ctx.quote.pdf_url) ctx.quote.pdf_url = `https://placehold.co/980x1380/pdf?text=Quote%20${ctx.quote.id}%20for%20${encodeURIComponent(contact)}`;
+  if (!ctx.quote.pdf_url) ctx.quote.pdf_url = imgPDFMock("Quote", ctx.quote.id, contact);
+  steps.push(`Quote prepared for ${contact}, total ${fmtEUR(ctx.quote.amount)}.`);
 
-  const steps = [
-    "Loaded quote template (demo).",
-    `Set customer: ${contact}.`,
-    `Amount: ${currencyEUR(ctx.quote.amount)}.`,
-    "Generated PDF preview (demo)."
-  ];
-
-  const cards = [
-    {
-      format:"table",
-      summary:"Draft Quote",
-      value:{
-        columns:["Quote #","Customer","Date","Subtotal","Tax","Total"],
-        rows:[[ctx.quote.id, contact, nowISO().slice(0,10), currencyEUR(ctx.quote.amount), currencyEUR(0), currencyEUR(ctx.quote.amount)]]
-      }
-    },
-    { format:"file", summary:"Quote PDF", value:{ url: ctx.quote.pdf_url, name: `${ctx.quote.id}.pdf` } }
-  ];
-
-  // also attach to email draft if exists
-  if (!ctx.email.attachments.find(a => a.url === ctx.quote.pdf_url)){
+  // Attach to email (prep for later send)
+  if (!ctx.email.attachments.find(a=>a.url===ctx.quote.pdf_url)){
     ctx.email.attachments.push({ name: `${ctx.quote.id}.pdf`, url: ctx.quote.pdf_url });
+    steps.push("Quote attached to email draft.");
   }
 
   return {
     script: bursts(
-      `Got it — creating a quote for ${contact}.`,
-      `Assuming total ${currencyEUR(ctx.quote.amount)} — change if needed.`,
+      `Creating a quote for ${contact}.`,
+      `Assuming total ${fmtEUR(ctx.quote.amount)} — change if needed.`,
       "Quote is ready and attached to the email draft."
     ),
-    cards,
-    ask: {
+    cards: [
+      cardImage("Quote PDF (preview)", ctx.quote.pdf_url),
+      {
+        format:"table",
+        summary:"Quote Details",
+        value:{
+          columns:["Quote #","Customer","Date","Subtotal","Tax","Total"],
+          rows:[[ctx.quote.id, contact, nowISO().slice(0,10), fmtEUR(ctx.quote.amount), fmtEUR(0), fmtEUR(ctx.quote.amount)]]
+        }
+      }
+    ],
+    ask:{
       context_id: traceId(),
-      question: "Next step?",
-      options:[{id:"email_prepare",label:"Open email draft"}, {id:"send_now",label:"Send quote via email"}, {id:"edit_amount",label:"Edit amount"}]
-    },
-    steps
+      question:"Next step?",
+      options:[{id:"open_email",label:"Open email draft"}, {id:"send_email",label:"Send quote via email"}, {id:"edit_amount",label:"Edit amount"}]
+    }
   };
 }
 
-function handleCRMUpdate(ctx){
+function handleCRMUpdate(ctx, steps){
   const contact = ctx.current_contact || ctx.quote.contact || "your client";
   if (!ctx.crm.type) ctx.crm.type = "follow_up";
   if (!ctx.crm.notes) ctx.crm.notes = "Follow-up email prepared; quote attached.";
   if (!ctx.crm.due){
-    const due = new Date(Date.now() + 2*24*3600*1000); // +2 days
+    const due = new Date(Date.now() + 2*24*3600*1000);
     ctx.crm.due = due.toISOString().slice(0,10);
   }
-
-  const steps = [
-    `Prepared CRM ${ctx.crm.type.replace('_',' ')} activity.`,
-    `Contact: ${contact}.`,
-    `Notes: ${ctx.crm.notes}.`,
-    `Due: ${ctx.crm.due}.`,
-  ];
-
-  const card = {
-    format:"table",
-    summary:"CRM Activity (demo)",
-    value:{
-      columns:["Type","Contact","Notes","Due","Status"],
-      rows:[[ctx.crm.type, contact, ctx.crm.notes, ctx.crm.due, ctx.crm.status]]
-    }
-  };
-
+  steps.push(`Prepared CRM ${ctx.crm.type.replace('_',' ')} for ${contact}.`);
+  const crmImg = imgCRMCard({ contact, note: ctx.crm.notes });
   return {
     script: bursts(
       `I’ll log a ${ctx.crm.type.replace('_',' ')} for ${contact}.`,
       "I’ve included the email + quote context and set a reminder."
     ),
-    cards:[card],
+    cards:[ cardImage("CRM Activity (demo)", crmImg),
+      { format:"table", summary:"CRM Activity (fields)", value:{
+          columns:["Type","Contact","Notes","Due","Status"],
+          rows:[[ctx.crm.type, contact, ctx.crm.notes, ctx.crm.due, ctx.crm.status]]
+      }} ],
     ask:{
       context_id: traceId(),
       question:"Keep the reminder for 2 days?",
       options:[{id:"keep_2d",label:"Yes"}, {id:"today",label:"Today"}, {id:"next_week",label:"Next week"}]
-    },
-    steps
+    }
   };
 }
 
-/* Optional: simple calendar demo */
-function handleCalendarEvent(ctx){
-  const start = new Date(Date.now()+36e5); // in 1h
+function handleCalendarEvent(ctx, steps, deltaDays=3, explicit=false){
+  const contact = ctx.current_contact || "client";
+  const start = new Date(Date.now() + deltaDays*24*3600*1000);
+  start.setHours(9,0,0,0);
   const end = new Date(start.getTime()+30*60*1000);
-  const steps = [
-    "Proposed 30-min slot.",
-    "Added virtual meeting link (demo)."
-  ];
+  ctx.calendar.title = `Call ${contact}`;
+  ctx.calendar.start = start.toISOString();
+  ctx.calendar.end = end.toISOString();
+  steps.push(`Drafted calendar event: ${ctx.calendar.title} (${start.toLocaleString()}).`);
+  const calImg = imgCalendarCard({ title: ctx.calendar.title, when: start.toLocaleString() });
   return {
-    script: bursts("I can set that up.","Here’s a 30-minute slot with a Meet link."),
-    cards:[{
-      format:"table",
-      summary:"Draft Calendar Event (demo)",
-      value:{
-        columns:["Title","Start","End","Location"],
-        rows:[["Follow-up with client", start.toLocaleString(), end.toLocaleString(), "Google Meet (auto)"]]
-      }
-    }],
-    ask:{ context_id: traceId(), question:"Create event & invite?", options:[{id:"create",label:"Create"}, {id:"edit",label:"Edit details"}] },
-    steps
+    script: bursts(
+      explicit ? `Scheduling a reminder in ${deltaDays} day(s).` : "I can set that up.",
+      `Here’s a 30-minute slot with a Meet link for ${contact}.`
+    ),
+    cards:[ cardImage("Calendar Draft (demo)", calImg),
+      { format:"table", summary:"Event (fields)", value:{
+          columns:["Title","Start","End","Location"],
+          rows:[[ctx.calendar.title, start.toLocaleString(), end.toLocaleString(), ctx.calendar.location]]
+      }} ],
+    ask:{ context_id: traceId(), question:"Create the event and invite you?", options:[{id:"create_event",label:"Create"}, {id:"edit_event",label:"Edit details"}] }
   };
 }
 
-/* General question handler (KB/LLM or demo) */
-async function handleGeneralQuestion({ utterance, kb_json, company_system_prompt }){
-  let text = await maybeLLMAnswer({ company_system_prompt, user: utterance });
-  if (!text) {
-    const co = kb_json?.meta?.company?.name || "your business";
-    text = `Here’s a quick answer based on what I know about ${co}. If you want, I can also take action for you.`;
+/* ───────────────────────── Execution: real tools if connected, else demo ───────────────────────── */
+async function executeSendEmail(req, ctx, steps){
+  const to = ctx.email.to || (ctx.current_contact || "contact");
+  const payload = {
+    to,
+    subject: ctx.email.subject,
+    html: `<p>${ctx.email.body?.replace(/\n/g,"<br/>")||""}</p>`,
+    attachments: ctx.email.attachments || []
+  };
+  if (CAP.email){
+    const r = await tryToolCall(req, "/api/tools/email_send.js", payload);
+    if (r.ok){ steps.push("Email sent via provider."); return { ok:true }; }
+    steps.push(`Email provider failed: ${r.error}`); // fall back to demo success
+  } else {
+    steps.push("Email provider not connected — demo-sent.");
   }
+  return { ok:true, demo:true };
+}
+async function executeCreateEvent(req, ctx, steps){
+  const payload = {
+    title: ctx.calendar.title,
+    start_iso: ctx.calendar.start,
+    end_iso: ctx.calendar.end,
+    attendees: []
+  };
+  if (CAP.calendar){
+    const r = await tryToolCall(req, "/api/tools/calendar_create_event.js", payload);
+    if (r.ok){ steps.push("Calendar event created."); return { ok:true, event_id:r.event_id }; }
+    steps.push(`Calendar provider failed: ${r.error}`);
+  } else {
+    steps.push("Calendar provider not connected — demo-created.");
+  }
+  return { ok:true, demo:true };
+}
+async function executeCRMLog(req, ctx, steps, extraNote=null){
+  const contact = ctx.current_contact || ctx.quote.contact || "your client";
+  const note = extraNote || ctx.crm.notes || "Follow-up recorded.";
+  if (CAP.crm){
+    const r = await tryToolCall(req, "/api/tools/crm_log_activity.js", {
+      contact: contact, note, type: ctx.crm.type||"follow_up", due: ctx.crm.due
+    });
+    if (r.ok){ steps.push("CRM updated with latest activity."); return { ok:true }; }
+    steps.push(`CRM update failed: ${r.error}`);
+  } else {
+    steps.push("CRM not connected — demo logged.");
+  }
+  return { ok:true, demo:true };
+}
+
+/* ───────────────────────── Web search / browse ───────────────────────── */
+async function handleSearchWeb(req, ctx, userText, steps){
+  const targetSite = (userText.match(/\b(idealista|rightmove|airbnb|booking|tripadvisor)\b/i)||[])[1];
+  const q = userText;
+  if (CAP.browser || CAP.search){
+    const r = await tryToolCall(req, CAP.browser ? "/api/tools/browser_scrape.js" : "/api/tools/search_web.js", { query:q, site:targetSite||null });
+    if (r.ok && Array.isArray(r.results) && r.results.length){
+      steps.push(`Searched ${targetSite||'web'} via provider.`);
+      // Convert first 5 results into a table + mock grid image
+      const rows = r.results.slice(0,5).map(x => [x.title||"Result", x.snippet||"", x.url||""]);
+      return {
+        script: bursts(
+          targetSite ? `I scanned ${targetSite} and pulled top results.` : "I searched the web and summarized the top results.",
+          "Here’s a short list — want me to go deeper?"
+        ),
+        cards: [
+          cardImage("Results (visual demo)", imgListingsGrid({ title: targetSite ? `${targetSite} · Top matches` : "Top Results" })),
+          { format:"table", summary:"Top results", value:{ columns:["Title","Snippet","URL"], rows } }
+        ],
+        ask: { context_id: traceId(), question:"Go deeper?", options:[{id:"deep_search",label:"Yes, dive deeper"}, {id:"enough",label:"This is enough"}] }
+      };
+    }
+    steps.push(`Provider returned no usable results — showing demo.`);
+  } else {
+    steps.push("Search/browse not connected — showing demo.");
+  }
+  // Demo
   return {
-    script: bursts(text),
-    cards: [],
-    ask: null,
-    steps:["Answered via KB/LLM (or demo fallback)."]
+    script: bursts(
+      targetSite ? `I’d normally search ${targetSite}, but it’s not connected yet.` : "Web search isn’t connected yet.",
+      "Here’s a quick mock so you can see the flow."
+    ),
+    cards: [
+      cardImage("Listings (demo)", imgListingsGrid({})),
+      { format:"table", summary:"Example Listings (demo)", value:{
+        columns:["Name","Beds","Plot","ETA to Puente Romano"],
+        rows:[
+          ["Villa La Vista","5","2500 m²","10 min"],
+          ["Villa Mediterráneo","5","2200 m²","12 min"],
+          ["Villa Sol y Mar","5","3000 m²","15 min"],
+          ["Villa Oasis","5","2100 m²","14 min"],
+          ["Villa Azure","5","2500 m²","13 min"],
+        ]
+      } }
+    ],
+    ask: { context_id: traceId(), question:"Connect browsing now?", options:[{id:"connect_browse",label:"Connect"}, {id:"not_now",label:"Not now"}] }
   };
 }
+
+/* ───────────────────────── Small talk / General Q ───────────────────────── */
 function handleSmallTalk(){
   return {
-    script: bursts("Hey! I’m here — what can I do for you?","Ask me to create, send, schedule, or look up anything."),
-    cards: [],
-    ask: null,
-    steps:["Greeted user"]
+    script: bursts("Picking up where we left off — what can I do for you?","Ask me to create, send, schedule, or look up anything."),
+    cards: [], ask: null, steps:["Greeted user"]
   };
 }
+async function handleGeneralQuestion(utterance, kb_json, company_system_prompt){
+  // LLM with KB context if available
+  let text = await maybeLLMAnswer({ company_system_prompt, kb_json, user: utterance });
+  if (!text){
+    const co = kb_json?.meta?.company?.name || "your business";
+    text = `Here’s a concise answer based on what I know about ${co}. If you'd like, I can also take action for you.`;
+  }
+  return { script: bursts(text), cards: [], ask:null, steps:["Answered via KB/LLM (or demo)."] };
+}
 
-/* ─────────── Planner ─────────── */
-/**
- * Build a simple plan from the current utterance + context.
- * Returns array of step ids we will execute sequentially.
- */
-function buildPlan(intents, ctx){
+/* ───────────────────────── Planner ───────────────────────── */
+function buildPlan(intents, ctx, utterance){
   const plan = [];
   const wantsEmail = intents.includes("email_prepare");
   const wantsQuote = intents.includes("quote_create");
   const wantsCRM   = intents.includes("crm_update");
   const wantsCal   = intents.includes("calendar_create_event");
-  const wantsInvoice = intents.includes("invoice_create"); // not wired below but kept for extension
+  const wantsSearch= intents.includes("search_web");
+  const wantsConfirm = intents.includes("confirm_action");
 
-  // Orchestrations
-  if (wantsEmail && wantsQuote){
-    plan.push("quote_create");      // create quote first
-    plan.push("email_prepare");     // then attach into email
-  } else if (wantsQuote){
-    plan.push("quote_create");
-  }
+  // orchestrations
+  if (wantsEmail && wantsQuote){ plan.push("quote_create"); plan.push("email_prepare"); }
+  else if (wantsQuote){ plan.push("quote_create"); }
   if (wantsEmail && !plan.includes("email_prepare")) plan.push("email_prepare");
-
   if (wantsCRM) plan.push("crm_update");
   if (wantsCal) plan.push("calendar_create_event");
+  if (wantsSearch) plan.push("search_web");
+  if (wantsConfirm) plan.push("confirm_action");
 
   if (intents.includes("small_talk")) plan.push("small_talk");
   if (intents.includes("general_question") && plan.length===0) plan.push("general_question");
-
-  // If user said “him/her” and we have contact => ensure email/quote target correct
   return plan;
 }
 
-/* ─────────── Main route ─────────── */
+/* ───────────────────────── Confirmation (execute + log back to CRM) ───────────────────────── */
+async function handleConfirmation(req, ctx, steps, utterance){
+  // Decide what to confirm based on context.pending OR last plan.
+  const u = utterance.toLowerCase();
+  let didSomething = false;
+
+  // Example: if last ask offered "send_email"
+  if ((ctx.pending && ctx.pending.type==="send_email") || /\bsend\b/.test(u)){
+    const res = await executeSendEmail(req, ctx, steps);
+    await executeCRMLog(req, ctx, steps, "Email sent with latest quote attached.");
+    didSomething = true;
+    return {
+      script: bursts("Done — email sent.","I’ve also logged the activity in the CRM."),
+      cards: [],
+      ask: null
+    };
+  }
+
+  if ((ctx.pending && ctx.pending.type==="create_event") || /\bcreate\b/.test(u)){
+    const res = await executeCreateEvent(req, ctx, steps);
+    await executeCRMLog(req, ctx, steps, "Calendar event created for follow-up call.");
+    didSomething = true;
+    return {
+      script: bursts("Calendar event created.","I also noted it in the CRM."),
+      cards: [],
+      ask: null
+    };
+  }
+
+  // If none matched, acknowledge
+  return {
+    script: bursts("Got it — just tell me ‘send’ or ‘create’ when you’re ready."),
+    cards: [], ask: null
+  };
+}
+
+/* ───────────────────────── Main route ───────────────────────── */
 module.exports = async (req, res) => {
   try {
     if (req.method !== "POST") return res.status(405).json({ ok:false, error:"Method Not Allowed" });
@@ -353,80 +549,96 @@ module.exports = async (req, res) => {
       utterance = "",
       mode = "text",
       history = [],
-      // optional multi-tenant artifacts (unused in demo flow but accepted)
       tenant = null, token = null,
       kb_json = null, company_system_prompt = null,
-      // NEW: session id to persist context between turns
       session_id = "demo"
     } = readBody(req);
 
     const ctx = loadCtx(session_id);
-    ingestUtteranceIntoCtx(utterance, ctx);
+    ingestUtterance(utterance, ctx);
 
     const intents = detect(utterance);
-    const plan = buildPlan(intents, ctx);
+    const plan = buildPlan(intents, ctx, utterance);
+    const steps = [];
 
-    // Execute plan sequentially, aggregating bursts/cards/steps
-    const finalScript = [];
-    const finalCards  = [];
-    const finalSteps  = [];
-
-    // Small guidance burst when we have a multi-step orchestration
-    if (plan.length > 1 && !(plan.length===1 && plan[0]==="general_question")){
-      finalScript.push(...bursts(`Plan: ${plan.map(p => p.replace(/_/g,' ')).join(' → ')}.`));
-      finalSteps.push(`Planner: ${plan.join(' -> ')}`);
+    // Pre-task: become aware via CRM (if we have a person involved)
+    if ((plan.includes("email_prepare") || plan.includes("quote_create") || plan.includes("crm_update") || plan.includes("calendar_create_event")) && (ctx.current_contact || ctx.quote.contact)){
+      await enrichFromCRM(req, ctx, steps);
     }
 
-    // Execute steps
+    const script = [];
+    const cards  = [];
+    let ask = null;
+
+    if (plan.length > 1 && !(plan.length===1 && plan[0]==="general_question")){
+      script.push(...bursts(`Plan: ${plan.map(p => p.replace(/_/g,' ')).join(' → ')}.`));
+      steps.push(`Planner: ${plan.join(' -> ')}`);
+    }
+
     for (const step of plan){
-      let result = null;
-      if (step === "email_prepare"){
-        result = handleEmailPrepare(ctx);
-      } else if (step === "quote_create"){
-        result = handleQuoteCreate(ctx);
+      let out = null;
+
+      if (step === "quote_create"){
+        out = handleQuoteCreate(ctx, steps);
+        ctx.pending = { type:"send_email" }; // common next action
+
+      } else if (step === "email_prepare"){
+        out = handleEmailPrepare(ctx, steps);
+        ctx.pending = { type:"send_email" };
+
       } else if (step === "crm_update"){
-        result = handleCRMUpdate(ctx);
+        out = handleCRMUpdate(ctx, steps);
+
       } else if (step === "calendar_create_event"){
-        result = handleCalendarEvent(ctx);
+        // detect relative day like "in 3 days"
+        const m = utterance.toLowerCase().match(/\bin\s+(\d+)\s+day/);
+        const days = m ? clamp(parseInt(m[1],10), 0, 365) : 3;
+        out = handleCalendarEvent(ctx, steps, days, !!m);
+        ctx.pending = { type:"create_event" };
+
+      } else if (step === "search_web"){
+        out = await handleSearchWeb(req, ctx, utterance, steps);
+
+      } else if (step === "confirm_action"){
+        out = await handleConfirmation(req, ctx, steps, utterance);
+
       } else if (step === "small_talk"){
-        result = handleSmallTalk();
+        out = handleSmallTalk();
+
       } else if (step === "general_question"){
-        result = await handleGeneralQuestion({ utterance, kb_json, company_system_prompt });
-      } else {
-        // unknown step → ignore
-        continue;
+        out = await handleGeneralQuestion(utterance, kb_json, company_system_prompt);
       }
 
-      // merge
-      if (Array.isArray(result?.script)) finalScript.push(...result.script);
-      if (Array.isArray(result?.cards))  finalCards.push(...result.cards);
-      if (Array.isArray(result?.steps))  finalSteps.push(...result.steps);
-
-      // attach ask only from the last actionable step (store for later)
-      var lastAsk = result?.ask || null;
+      if (out){
+        if (out.script) script.push(...out.script);
+        if (out.cards)  cards.push(...out.cards);
+        if (out.ask)    ask = out.ask; // last ask wins
+      }
     }
 
-    // Persist context for the next turn
+    // Persist context
+    ctx.last_plan = plan;
     saveCtx(session_id, ctx);
 
-    // If nothing planned (edge case), default to small talk
+    // Fallback if nothing planned
     if (plan.length === 0){
       const fallback = handleSmallTalk();
-      finalScript.push(...fallback.script);
-      finalSteps.push(...fallback.steps);
+      script.push(...fallback.script);
+      steps.push(...fallback.steps);
     }
 
     return okJSON(res, {
       mode,
-      script: finalScript,
-      cards: finalCards,
-      ask: lastAsk || null,
+      script,
+      cards,
+      ask,
       meta: {
         intent: plan[0] || "general",
         trace_id: traceId(),
-        steps: finalSteps,
+        steps,
         plan,
-        session_id
+        session_id,
+        tools_connected: CAP
       }
     });
 
