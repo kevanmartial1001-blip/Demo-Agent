@@ -25,8 +25,14 @@
   .icon-btn{width:38px;height:38px;border-radius:10px;border:1px solid var(--line);display:flex;align-items:center;justify-content:center;background:#fff;cursor:pointer}
 
   main{flex:1;overflow:auto;position:relative}
-  .welcomeOverlay{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none; z-index:1;}
-  .welcomeBubble{background:var(--welcome); border:1px solid var(--line); color:#4b5563; padding:18px 20px; border-radius:16px; text-align:center; max-width:560px;}
+  .welcomeOverlay{
+    position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    pointer-events:none; z-index:1;
+  }
+  .welcomeBubble{
+    background:var(--welcome); border:1px solid var(--line); color:#4b5563;
+    padding:18px 20px; border-radius:16px; text-align:center; max-width:560px;
+  }
 
   .stream{max-width:820px;margin:0 auto;padding:16px}
   .msg{display:flex;margin:14px 0}
@@ -38,7 +44,6 @@
   table{width:100%;border-collapse:collapse;margin-top:6px}
   th,td{border:1px solid var(--line);padding:8px;text-align:left}
 
-  /* Typing / thinking indicator */
   .typing{display:inline-flex;align-items:center;gap:6px}
   .dots{display:inline-flex;gap:4px}
   .dot{width:6px;height:6px;border-radius:50%;background:#9aa6b2;opacity:.6;animation:bounce 1.2s infinite}
@@ -104,7 +109,7 @@
 
     <div id="callArea" class="callWrap" aria-live="polite">
       <div id="viz" class="viz"></div>
-      <div class="status">Tell me, how can I help you today?</div>
+      <div id="callStatus" class="status">Tell me, how can I help you today?</div>
       <div class="prompt">Hands-free: just speak. I’ll answer out loud, then listen again.</div>
       <audio id="remoteAudio" autoplay playsinline></audio>
     </div>
@@ -158,7 +163,7 @@
 </div>
 
 <script>
-/* ====== Tenant bootstrap ====== */
+/* ====== Tenant bootstrap (optional) ====== */
 window.__KB__ = window.__KB__ || null;
 window.__SYS_PROMPT__ = window.__SYS_PROMPT__ || null;
 window.__TENANT__ = window.__TENANT__ || null;
@@ -217,6 +222,8 @@ const $textFooter = document.getElementById('textFooter');
 const $vnFooter = document.getElementById('vnFooter');
 
 const $callArea = document.getElementById('callArea');
+const $viz = document.getElementById('viz');
+const $callStatus = document.getElementById('callStatus');
 
 const $prompt = document.getElementById('prompt');
 const $send = document.getElementById('send');
@@ -242,65 +249,110 @@ try { const savedEmail = localStorage.getItem('demo_contact_email'); if (savedEm
 /* ====== Helpers ====== */
 function esc(s){ return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 function tableHTML(t){ if(!t||!t.columns||!t.rows) return ''; let h='<table><thead><tr>'; for(const c of t.columns) h+=`<th>${esc(String(c))}</th>`; h+='</tr></thead><tbody>'; for(const r of t.rows) h+='<tr>'+r.map(v=>`<td>${esc(String(v))}</td>`).join('')+'</tr>'; h+='</tbody></table>'; return h; }
-function scrollToBottom(el){ el.scrollTop = el.scrollHeight; requestAnimationFrame(()=>{ el.scrollTop = el.scrollHeight; }); }
+function scrollToBottom(el){ el.scrollTo({ top: el.scrollHeight, behavior:'smooth' }); }
 
-/* ====== Typing indicator (used everywhere) ====== */
+/* ====== Typing indicator per-burst ====== */
 function showTyping(targetStreamEl){
   const wrap = document.createElement('div'); wrap.className='msg';
-  wrap.innerHTML = `<div class="bubble"><div class="role">Your AI Employee</div><span class="typing"><span>thinking</span><span class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span></span></div>`;
+  wrap.innerHTML = `<div class="bubble"><div class="role">Your AI Employee</div>
+    <span class="typing"><span>typing</span>
+      <span class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
+    </span></div>`;
   targetStreamEl.appendChild(wrap);
   scrollToBottom(targetStreamEl);
-  let removed = false;
-  return () => { if (!removed) { removed = true; wrap.remove(); scrollToBottom(targetStreamEl); } };
+  return () => wrap.remove();
+}
+function humanDelayFor(text){
+  const len = (text||'').length;
+  return Math.max(900, Math.min(1800, Math.round(len * 8)));
 }
 
-/* ====== Sentence splitting that preserves titles like "Mr.", "Mrs.", "Dr." ====== */
-function splitToSentences(text){
-  if(!text) return [];
-  const exceptions = new Set(["mr.","mrs.","ms.","dr.","prof.","sr.","jr.","st.","u.s.","e.g.","i.e.","inc.","ltd.","co."]);
-  const out = [];
-  let cur = "";
-  for (let i=0;i<text.length;i++){
-    const ch = text[i];
-    cur += ch;
-    if (ch === "." || ch === "!" || ch === "?") {
-      const tail = text.slice(Math.max(0, i-6), i+1).toLowerCase();
-      let isException = false;
-      for (const ex of exceptions) { if (tail.endsWith(ex)) { isException = true; break; } }
-      if (!isException) {
-        out.push(cur.trim());
-        cur = "";
-        while (i+1 < text.length && text[i+1] === " ") i++; // skip double spaces
-      }
+/* ===== Status HUD ===== */
+function makeStatusHUD(targetStreamEl){
+  const wrap = document.createElement('div');
+  wrap.className = 'msg assistant';
+  wrap.dataset.hud = '1';
+  wrap.innerHTML = `
+    <div class="bubble">
+      <div class="role">Your AI Employee</div>
+      <div class="card">
+        <h3>Status</h3>
+        <ul id="hudLines" style="margin:0;padding-left:18px"></ul>
+      </div>
+    </div>`;
+  targetStreamEl.appendChild(wrap);
+  const list = wrap.querySelector('#hudLines');
+
+  const add = (text, type='info') => {
+    const li = document.createElement('li');
+    li.textContent = text;
+    if (type === 'warn') li.style.color = '#b45309';
+    if (type === 'error') li.style.color = '#b91c1c';
+    list.appendChild(li);
+    scrollToBottom(targetStreamEl);
+  };
+  const replaceLast = (text) => { const last = list.lastElementChild; if (last) last.textContent = text; };
+
+  return { add, replaceLast, done: () => wrap.removeAttribute('data-hud'), remove: () => wrap.remove() };
+}
+
+/* ====== Shared renderer (no blocking) ====== */
+async function renderFinalAnswer(resp, targetStreamEl, targetMessages){
+  try{
+    // 1) bursts
+    const bursts = Array.isArray(resp?.script) ? resp.script : [];
+    for (let i=0;i<bursts.length;i++){
+      const b = bursts[i] || {};
+      const removeTyping = showTyping(targetStreamEl);
+      const wait = humanDelayFor(b.text) + (b.delay_ms||0);
+      await new Promise(r=>setTimeout(r, wait));
+      removeTyping();
+
+      const roleHdr = (b.show_role || i===0) ? '<div class="role">Your AI Employee</div>' : '';
+      const wrap = document.createElement('div'); wrap.className='msg assistant';
+      wrap.innerHTML = `<div class="bubble">${roleHdr}${esc(b.text||'')}</div>`;
+      targetStreamEl.appendChild(wrap);
+      scrollToBottom(targetStreamEl);
+
+      targetMessages.push({ role:'assistant', html: esc(b.text||''), raw:{ meta: resp.meta||{} } });
     }
+
+    // 2) cards
+    const cards = Array.isArray(resp?.cards) ? resp.cards : [];
+    if (cards.length){
+      const container = document.createElement('div'); container.className='msg assistant';
+      const inner = document.createElement('div'); inner.className='bubble';
+      inner.innerHTML = `<div class="role">Your AI Employee</div>`;
+      for (const c of cards){
+        if (c.format === 'table') {
+          inner.innerHTML += `<div class="card"><h3>${esc(c.summary||'Result')}</h3>${tableHTML(c.value)}</div>`;
+        } else if (c.format === 'file') {
+          const v = c.value||{};
+          inner.innerHTML += `<div class="card"><h3>${esc(c.summary||'File')}</h3>
+            <a href="${esc(v.url||'#')}" target="_blank" rel="noopener">${esc(v.name||'Download')}</a></div>`;
+        } else {
+          inner.innerHTML += `<div class="card"><h3>${esc(c.summary||'Result')}</h3><div>${esc(c.value||'')}</div></div>`;
+        }
+      }
+      container.appendChild(inner);
+      targetStreamEl.appendChild(container);
+      scrollToBottom(targetStreamEl);
+      targetMessages.push({ role:'assistant', html: inner.innerHTML, raw:{ meta: resp.meta||{} } });
+    }
+
+    // 3) ask options
+    if (resp?.ask) renderAsk(resp.ask);
+
+  }catch(e){
+    const wrap = document.createElement('div'); wrap.className='msg assistant';
+    wrap.innerHTML = `<div class="bubble"><div class="role">Your AI Employee</div>
+      <div class="card"><h3>Error</h3><div>${esc(String(e.message||e))}</div></div></div>`;
+    targetStreamEl.appendChild(wrap);
+    scrollToBottom(targetStreamEl);
   }
-  if (cur.trim()) out.push(cur.trim());
-  return out;
 }
 
-/* ====== Burst delivery: typing before each line; label only on first ====== */
-function renderAssistantLine(streamEl, model, html, { showRole=false } = {}){
-  model.push({ role:'assistant', html, showRole });
-  if (streamEl === $stream) renderText(); else renderVN();
-}
-
-async function deliverBursts(streamEl, model, text){
-  const sentences = splitToSentences(text).slice(0, 6);
-  if (sentences.length === 0) return;
-
-  for (let i=0;i<sentences.length;i++){
-    const typingCancel = showTyping(streamEl);
-    const wait = 350 + Math.floor(Math.random()*900); // 0.35–1.25s
-    await new Promise(r=>setTimeout(r, wait));
-    typingCancel();
-
-    const showRole = (i === 0); // ONLY first line shows "Your AI Employee"
-    renderAssistantLine(streamEl, model, esc(sentences[i]), { showRole });
-    await new Promise(r=>setTimeout(r, 220 + Math.min(1200, sentences[i].length * 10)));
-  }
-}
-
-/* ====== Ask UI (kept if you need later) ====== */
+/* ====== Ask UI ====== */
 function renderAsk(askObj){
   if (!askObj) return;
   const wrap = document.createElement('div');
@@ -313,14 +365,30 @@ function renderAsk(askObj){
     </div>
   </div>`;
   $stream.appendChild(wrap); scrollToBottom($stream);
+  wrap.querySelectorAll('button[data-o]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const choice = btn.getAttribute('data-o');
+      const client = { phone: getPhone(), email: getEmail() };
+      const body = { utterance: `deliver via ${choice}`, client };
+
+      if (window.__TENANT__ && window.__TOKEN__) {
+        body.tenant = window.__TENANT__; body.token  = window.__TOKEN__;
+      } else {
+        body.kb_json = window.__KB__; body.company_system_prompt = window.__SYS_PROMPT__;
+      }
+
+      const r = await fetch('/api/demoAgent',{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+      const resp = await r.json();
+      await renderFinalAnswer(resp, $stream, messages);
+    });
+  });
 }
 
 /* ====== API & history ====== */
 function historyForAPI(){
-  const h=[];
-  for(const m of messages){
+  const h=[]; for(const m of messages){
     if(m.role==='user') h.push({role:'user',text:m.html.replace(/<[^>]+>/g,'')});
-    if(m.role==='assistant') h.push({role:'assistant',text:m.html.replace(/<[^>]+>/g,'')});
+    if(m.role==='assistant'&&m.raw?.meta) h.push({role:'assistant',intent:m.raw.meta.intent,entities:m.raw.entities||{}});
   }
   return h.slice(-12);
 }
@@ -329,126 +397,103 @@ function getEmail(){ return ($setEmail.value||'').trim(); }
 
 async function askAPI(text){
   const client = { phone: getPhone(), email: getEmail() };
-  const mode =
-    $callArea.style.display === 'flex' ? 'call' :
-    ($vnStream.style.display !== 'none' ? 'voicenote' : 'text');
-
-  const body = { utterance:text, demo:true, history:historyForAPI(), client, mode };
+  const mode = 'text';
+  const body = { utterance:text, history:historyForAPI(), client, mode };
 
   if (window.__TENANT__ && window.__TOKEN__) {
-    body.tenant = window.__TENANT__;
-    body.token  = window.__TOKEN__;
+    body.tenant = window.__TENANT__; body.token  = window.__TOKEN__;
   } else {
-    body.kb_json = window.__KB__;
-    body.company_system_prompt = window.__SYS_PROMPT__;
+    body.kb_json = window.__KB__; body.company_system_prompt = window.__SYS_PROMPT__;
   }
 
-  const r = await fetch('/api/demoAgent',{
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify(body)
-  });
-  if(!r.ok) throw new Error('HTTP '+r.status);
-  return r.json();
-}
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort('timeout'), 15000); // 15s timeout
 
-/* ====== Runner stream (SSE) ====== */
-function openRunStream(run_url, targetStreamEl, targetMessages, typingCancel){
-  return new Promise((resolve) => {
-    const es = new EventSource(run_url);
-    es.onmessage = async (e) => {
-      try {
-        const evt = JSON.parse(e.data || "{}");
-        if (evt.type === "final") {
-          const result = evt.result || {};
-          const finalText = result.summary
-            || (Array.isArray(result.bullets) ? result.bullets.join(" ") : "")
-            || "All set.";
-          if (typingCancel) typingCancel();
-          await deliverBursts(targetStreamEl, targetMessages, finalText);
-
-          const links = result.links || [];
-          if (links.length) {
-            const cardHtml = `<div class="card"><h3>Links</h3><ul>${links.map(l=>`<li><a href="${esc(l)}" target="_blank" rel="noopener">${esc(l)}</a></li>`).join('')}</ul></div>`;
-            targetMessages.push({ role:'assistant', html: cardHtml, showRole:false });
-            if (targetStreamEl === $stream) renderText(); else renderVN();
-          }
-          es.close(); resolve();
-        }
-      } catch {}
-    };
-    es.onerror = () => { try{ es.close(); }catch{} if(typingCancel) typingCancel(); resolve(); };
-  });
+  try {
+    const r = await fetch('/api/demoAgent',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+    if(!r.ok){
+      const t = await r.text().catch(()=> '');
+      const err = new Error(`HTTP ${r.status}${t ? ' — ' + t.slice(0,200) : ''}`);
+      err.http = r.status; throw err;
+    }
+    return r.json();
+  } catch (e) {
+    clearTimeout(timeout);
+    if (e?.name === 'AbortError' || e === 'timeout') {
+      const err = new Error('Timeout waiting for /api/demoAgent'); err.code='TIMEOUT'; throw err;
+    }
+    throw e;
+  }
 }
 
 /* ====== Text mode ====== */
 function renderText(){
   $stream.innerHTML = messages.map(m=>{
     const role = m.role==='user'?'user':'assistant';
-    const roleHtml = (role==='assistant' && m.showRole) ? '<div class="role">Your AI Employee</div>'
-                     : (role==='user' ? '<div class="role">You</div>' : '');
-    return `<div class="msg ${role}"><div class="bubble">${roleHtml}${m.html}</div></div>`;
+    return `<div class="msg ${role}"><div class="bubble">${role==='user'?'<div class="role">You</div>':'<div class="role">Your AI Employee</div>'}${m.html}</div></div>`;
   }).join('');
   scrollToBottom($stream);
 }
-function renderVN(){
-  $vnStream.innerHTML = vnMessages.map(m=>{
-    const role = m.role==='user'?'user':'assistant';
-    const roleHtml = (role==='assistant' && m.showRole) ? '<div class="role">Your AI Employee</div>'
-                     : (role==='user' ? '<div class="role">You (voice note)</div>' : '');
-    return `<div class="msg ${role}"><div class="bubble">${roleHtml}${m.html}</div></div>`;
-  }).join('');
-  scrollToBottom($vnStream);
-}
-
 function pushUser(text){
   messages.push({role:'user', html:esc(text)}); renderText();
   if (!firstUserMessageSent) { firstUserMessageSent = true; $welcome.style.display='none'; }
 }
-
-async function sendText(){
+function sendText(){
   const t = $prompt.value.trim(); if(!t) return;
   pushUser(t); $prompt.value='';
-  const typingCancel = showTyping($stream); // show thinking immediately (desktop fix)
 
-  try{
-    const resp = await askAPI(t);
+  // Live HUD
+  const hud = makeStatusHUD($stream);
+  hud.add('Understanding your request…');
+  setTimeout(()=> hud.add('Planning the steps…'), 700);
+  setTimeout(()=> hud.add('Waiting for /api/demoAgent…'), 1100);
 
-    if (resp.type === "answer" && resp.text) {
-      typingCancel();
-      await deliverBursts($stream, messages, resp.text);
-      return;
-    }
-
-    if (resp.type === "planned" && resp.run_url) {
-      // Ack first (proactive)
-      if (resp.ack) {
-        typingCancel();
-        await deliverBursts($stream, messages, resp.ack);
-      }
-      // Keep typing visible while the agent runs
-      const duringRunTyping = showTyping($stream);
-      await openRunStream(resp.run_url, $stream, messages, duringRunTyping);
-      return;
-    }
-
-    typingCancel();
-    messages.push({role:'assistant', html:`<div class="card"><h3>Info</h3><div>Working on it…</div></div>`, showRole:true});
-    renderText();
-  } catch(e){
-    typingCancel();
-    messages.push({role:'assistant', html:`<div class="card"><h3>Error</h3><div>${esc(String(e.message||e))}</div></div>`, showRole:true});
-    renderText();
-  }
+  askAPI(t)
+    .then(async (resp)=>{
+      hud.add('Received response. Parsing…');
+      try {
+        const steps = resp?.meta?.steps || resp?.meta?.logs || [];
+        if (Array.isArray(steps)) {
+          for (const s of steps) {
+            const line = typeof s === 'string' ? s : (s?.msg || JSON.stringify(s));
+            hud.add(line);
+          }
+        }
+      } catch {}
+      hud.add('Rendering result…');
+      hud.remove();
+      await renderFinalAnswer(resp, $stream, messages);
+    })
+    .catch(e=>{
+      hud.add('Something went wrong.', 'error');
+      hud.add(String(e.message || e), 'error');
+      hud.add('Tip: check /api/health or Vercel logs.', 'warn');
+    });
 }
 $send.addEventListener('click', sendText);
 $prompt.addEventListener('keydown', e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendText(); }});
 
-/* ====== Voice Note (kept) ====== */
+/* ====== Voice Note (kept minimal; uses same renderer) ====== */
 let vnMediaRec=null, vnChunks=[], vnBlob=null, vnMime=null, vnDurationSec=0, vnStartAt=0, vnStreamLive=null;
-function renderVNStream(){ renderVN(); }
-function vnPushAudio(blobUrl, durationSec){
-  const html = `<div class="audio-note"><audio controls src="${blobUrl}"></audio><small>${Math.round(durationSec)}s</small></div>`;
+function renderVN(){
+  $vnStream.innerHTML = vnMessages.map(m=>{
+    const role = m.role==='user'?'user':'assistant';
+    return `<div class="msg ${role}"><div class="bubble">${
+      role==='user'
+        ? '<div class="role">You (voice note)</div>' + m.html
+        : '<div class="role">Your AI Employee</div>' + m.html
+    }</div></div>`;
+  }).join('');
+  scrollToBottom($vnStream);
+}
+function vnPushAudio(url, durationSec){
+  const html = `<div class="audio-note"><audio controls src="${url}"></audio><small>${Math.round(durationSec)}s</small></div>`;
   vnMessages.push({ role:'user', html }); renderVN();
   if (!firstUserMessageSent){ firstUserMessageSent=true; $welcome.style.display='none'; }
 }
@@ -482,44 +527,79 @@ document.getElementById('vnSend').addEventListener('click', async ()=>{
   vnPushAudio(url, vnDurationSec);
   document.getElementById('vnSend').disabled = true;
 
-  const base64 = await blobToBase64(vnBlob);
+  const base64 = await (new Promise(res=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.readAsDataURL(vnBlob); }));
   const res = await fetch('/api/transcribe', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({ audio: base64, mime: vnMime })
   });
   const j = await res.json();
-  const typingCancel = showTyping($vnStream);
-
   if (!j.ok){
-    typingCancel();
-    vnMessages.push({ role:'assistant', html:`<div class="card"><h3>Error</h3><div>Transcription failed.</div></div>`, showRole:true});
+    vnMessages.push({ role:'assistant', html:`<div class="card"><h3>Error</h3><div>Transcription failed.</div></div>`});
     renderVN(); document.getElementById('vnSend').disabled=false; return;
   }
   const text = j.text || '';
-  askAPI(text).then(async (resp)=>{
-      if (resp.type === "answer" && resp.text) {
-        typingCancel(); await deliverBursts($vnStream, vnMessages, resp.text);
-      } else if (resp.type === "planned" && resp.run_url) {
-        typingCancel();
-        if (resp.ack) await deliverBursts($vnStream, vnMessages, resp.ack);
-        const duringRunTyping = showTyping($vnStream);
-        await openRunStream(resp.run_url, $vnStream, vnMessages, duringRunTyping);
-      } else {
-        typingCancel();
-        vnMessages.push({ role:'assistant', html:`<div class="card"><h3>Info</h3><div>Working on it…</div></div>`, showRole:true});
-        renderVN();
-      }
-      document.getElementById('vnSend').disabled=false;
-    })
-    .catch(()=>{
-      typingCancel();
-      vnMessages.push({ role:'assistant', html:`<div class="card"><h3>Error</h3><div>Sorry, there was an error.</div></div>`, showRole:true});
-      renderVN(); document.getElementById('vnSend').disabled=false;
-    });
+  askAPI(text)
+    .then(async (resp)=>{ await renderFinalAnswer(resp, $vnStream, vnMessages); document.getElementById('vnSend').disabled=false; })
+    .catch(()=>{ vnMessages.push({ role:'assistant', html:`<div class="card"><h3>Error</h3><div>Sorry, there was an error.</div></div>`}); renderVN(); document.getElementById('vnSend').disabled=false; });
 });
-function blobToBase64(blob){ return new Promise((resolve)=>{ const r=new FileReader(); r.onload=()=>resolve(r.result); r.readAsDataURL(blob); }); }
 
-/* ====== Mode switching & settings ====== */
+/* ====== Call mode (light visualizer) ====== */
+let sr=null, speaking=false, listening=false, gateThresh=0.02;
+function sttAvailable(){ return !!(window.SpeechRecognition || window.webkitSpeechRecognition); }
+let audioCtx=null, analyser=null, rafId=null;
+function startVizFallback(){
+  if (audioCtx) return;
+  (async ()=>{
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation:true, noiseSuppression:true, autoGainControl:true, channelCount:1 }
+    });
+    audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+    const src = audioCtx.createMediaStreamSource(stream);
+    const hpf = audioCtx.createBiquadFilter(); hpf.type='highpass'; hpf.frequency.value = 120;
+    analyser = audioCtx.createAnalyser(); analyser.fftSize = 1024;
+    src.connect(hpf).connect(analyser);
+    const data = new Float32Array(analyser.fftSize);
+    function tick(now){
+      analyser.getFloatTimeDomainData(data);
+      let sum=0; for(let i=0;i<data.length;i++){ const v=data[i]; sum+=v*v; }
+      const rms=Math.sqrt(sum/data.length);
+      const gated = rms > gateThresh;
+      if(listening && gated){
+        $viz.style.borderColor='var(--listen)';
+        $viz.style.boxShadow='0 12px 40px rgba(16,185,129,.22)';
+        const scale=1+Math.min(1.0,rms*3.8); $viz.style.transform=`scale(${scale.toFixed(2)})`;
+      }else if(speaking){
+        const t=now/520; const scale=1+0.07*Math.sin(t*2*Math.PI);
+        $viz.style.transform=`scale(${scale.toFixed(2)})`;
+        $viz.style.borderColor='var(--speak)';
+      }else{
+        $viz.style.transform='scale(1)';
+        $viz.style.borderColor='#bfe7ff';
+        $viz.style.boxShadow='0 12px 40px rgba(14,165,233,.18)';
+      }
+      rafId=requestAnimationFrame(tick);
+    }
+    rafId=requestAnimationFrame(tick);
+  })();
+}
+let selectedVoice=null;
+function getVoicesOnce(){ return new Promise(r=>{ const v=speechSynthesis.getVoices(); if(v&&v.length) return r(v); speechSynthesis.onvoiceschanged=()=>r(speechSynthesis.getVoices()); }); }
+async function pickEnglishVoice(){ const voices=await getVoicesOnce(); const prefer=[/en-US.*(Female|Samantha|Google US|Jenny|America|Alloy|Natural)/i,/en-GB/i,/en-/i]; for(const rx of prefer){ const hit=voices.find(v=>rx.test(`${v.name} ${v.lang}`)); if(hit) return hit; } return voices[0]||null; }
+async function speakFallback(t){ if(!window.speechSynthesis) return; if(!selectedVoice) selectedVoice=await pickEnglishVoice(); speaking=true; listening=false; const u=new SpeechSynthesisUtterance(t||''); u.lang='en-US'; u.voice=selectedVoice||null; u.rate=1; u.pitch=1; speechSynthesis.cancel(); speechSynthesis.speak(u); u.onend=()=>{ speaking=false; startListenFallback(); }; }
+function startListenFallback(){
+  if(!sttAvailable()){ $callStatus.textContent='Microphone not supported.'; return; }
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  try{ sr && sr.abort(); }catch{}
+  sr=new SR(); sr.lang='en-US'; sr.interimResults=true; sr.continuous=true;
+  listening=true; $callStatus.textContent="Tell me, how can I help you today?";
+  let final='';
+  sr.onresult=(e)=>{ for(let i=e.resultIndex;i<e.results.length;i++){ const r=e.results[i]; if(r.isFinal){ final=r[0].transcript.trim(); if(final){ try{ sr.abort(); }catch{} listening=false; $callStatus.textContent='…'; askAPI(final).then(resp=>{ (async ()=>{ await speakFallback((resp?.script?.at(-1)?.text)||'Here is your update.'); })(); }); }}} };
+  sr.onerror=()=>{ listening=false; setTimeout(startListenFallback,250); };
+  sr.onend=()=>{ if(!speaking) setTimeout(startListenFallback,120); };
+  try{ sr.start(); }catch{ setTimeout(startListenFallback,200); }
+}
+
+/* ====== Mode switching ====== */
 function enterTextMode(){
   $stream.style.display='block'; $vnStream.style.display='none';
   $textFooter.style.display='block'; $vnFooter.style.display='none';
@@ -534,8 +614,13 @@ async function enterCallMode(){
   $stream.style.display='none'; $vnStream.style.display='none';
   $textFooter.style.display='none'; $vnFooter.style.display='none';
   $callArea.style.display='flex';
+  startVizFallback();
+  speakFallback('Listening.');
 }
 function leaveCallMode(){
+  try{ sr && sr.abort(); }catch{} try{ speechSynthesis.cancel(); }catch{}
+  listening=false; speaking=false;
+  $viz.style.transform='scale(1)'; $viz.style.borderColor='#bfe7ff'; $viz.style.boxShadow='0 12px 40px rgba(14,165,233,.18)';
   $callArea.style.display='none';
 }
 $modeToggle.addEventListener('click', (e)=>{
@@ -548,7 +633,7 @@ $modeToggle.addEventListener('click', (e)=>{
   else if (m==='call') enterCallMode();
 });
 
-/* Settings modal */
+/* ====== Settings modal ====== */
 function openKB(){ $kbModal.style.display='flex'; $kbModal.setAttribute('aria-hidden','false'); }
 function closeKB(){ $kbModal.style.display='none'; $kbModal.setAttribute('aria-hidden','true'); }
 $gearBtn.addEventListener('click', openKB);
@@ -561,19 +646,19 @@ $kbSave.addEventListener('click', ()=>{
 
 /* Settings: test actions */
 $testWA.addEventListener('click', async ()=>{
-  const to = ($setPhone.value||'').trim(); if(!to) return alert('Enter a phone first.');
+  const to = getPhone(); if(!to) return alert('Enter a phone first.');
   const body = ($testMsg.value||'Hello from Your AI Employee (test).').trim();
   const r = await fetch('/api/sendWhatsApp',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to, body })});
   const j = await r.json(); alert(j.ok ? 'WhatsApp sent ✓' : ('WhatsApp error: ' + j.error));
 });
 $testCall.addEventListener('click', async ()=>{
-  const to = ($setPhone.value||'').trim(); if(!to) return alert('Enter a phone first.');
+  const to = getPhone(); if(!to) return alert('Enter a phone first.');
   const message = ($testMsg.value||'This is a test call from Your AI Employee.').trim();
   const r = await fetch('/api/call',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to, message })});
   const j = await r.json(); alert(j.ok ? 'Calling now ✓' : ('Call error: ' + j.error));
 });
 $testEmail.addEventListener('click', async ()=>{
-  const to = ($setEmail.value||'').trim(); if(!to) return alert('Enter an email first.');
+  const to = getEmail(); if(!to) return alert('Enter an email first.');
   const subject = 'Your AI Employee — Test Email';
   const html = `<p>${esc(($testMsg.value||'Hello from Your AI Employee (test).').trim())}</p>`;
   const r = await fetch('/api/sendMailgun',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to, subject, html })});
@@ -581,7 +666,10 @@ $testEmail.addEventListener('click', async ()=>{
 });
 
 /* ====== Welcome ====== */
-function ensureWelcome(){ $welcome.style.display = firstUserMessageSent ? 'none' : 'flex'; }
+function ensureWelcome(){
+  if (firstUserMessageSent) $welcome.style.display='none';
+  else $welcome.style.display='flex';
+}
 ensureWelcome();
 </script>
 </body>
