@@ -1,167 +1,140 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Your AI Employee</title>
 <style>
-  :root{
-    --bg:#f6f7fb; --panel:#ffffff; --ink:#0b0c10; --muted:#647085; --line:#e6e8f0; --accent:#0ea5e9;
-    --bubble-user:#e8f3ff; --bubble-ai:#ffffff; --welcome:#eef1f6;
-    --speak:#1e90ff; --listen:#10b981;
-    --ok:#16a34a; --warn:#f59e0b;
-  }
-  *{box-sizing:border-box} html,body{height:100%}
-  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 ui-sans-serif,system-ui,Inter,Segoe UI,Arial}
-  .app{display:flex;flex-direction:column;height:100%}
+:root{
+  --bg:#f6f7fb;--panel:#fff;--ink:#0b0c10;--muted:#647085;--line:#e6e8f0;
+  --accent:#0ea5e9;--bubble-user:#e8f3ff;--bubble-ai:#fff;--welcome:#eef1f6;
+  --speak:#1e90ff;--listen:#10b981;--ok:#16a34a;--warn:#f59e0b;
+}
+*{box-sizing:border-box}html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:15px/1.6 ui-sans-serif,system-ui,Inter,Segoe UI,Arial}
+.app{display:flex;flex-direction:column;height:100%}
 
-  header{position:sticky;top:0;background:var(--panel);border-bottom:1px solid var(--line);
-    padding:12px 16px;display:flex;align-items:center;gap:12px;z-index:50}
-  header h1{font-size:15px;font-weight:600;margin:0}
-  .toggle{display:flex;border:1px solid var(--line);border-radius:999px;overflow:hidden}
-  .toggle button{border:none;background:#fff;padding:8px 12px;cursor:pointer;font-weight:600;color:#334155}
-  .toggle button.active{background:var(--ink);color:#fff}
-  .spacer{flex:1}
-  .icon-btn{width:38px;height:38px;border-radius:10px;border:1px solid var(--line);display:flex;align-items:center;justify-content:center;background:#fff;cursor:pointer}
+/* Header */
+header{position:sticky;top:0;background:var(--panel);border-bottom:1px solid var(--line);
+  padding:12px 16px;display:flex;align-items:center;gap:12px;z-index:50}
+header h1{font-size:15px;font-weight:600;margin:0}
+.toggle{display:flex;border:1px solid var(--line);border-radius:999px;overflow:hidden}
+.toggle button{border:none;background:#fff;padding:8px 12px;cursor:pointer;font-weight:600;color:#334155}
+.toggle button.active{background:var(--ink);color:#fff}
+.spacer{flex:1}
+.icon-btn{width:38px;height:38px;border-radius:10px;border:1px solid var(--line);
+  display:flex;align-items:center;justify-content:center;background:#fff;cursor:pointer}
 
-  main{flex:1;overflow:auto;position:relative}
-  .welcomeOverlay{
-    position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
-    pointer-events:none; z-index:1;
-  }
-  .welcomeBubble{
-    background:var(--welcome); border:1px solid var(--line); color:#4b5563;
-    padding:18px 20px; border-radius:16px; text-align:center; max-width:560px;
-  }
+/* Main */
+main{flex:1;overflow:auto;position:relative}
+.welcomeOverlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  pointer-events:none;z-index:1}
+.welcomeBubble{background:var(--welcome);border:1px solid var(--line);color:#4b5563;
+  padding:18px 20px;border-radius:16px;text-align:center;max-width:560px}
+.stream{max-width:820px;margin:0 auto;padding:16px}
+.msg{display:flex;margin:14px 0}
+.msg.user{justify-content:flex-end}
+.bubble{max-width:720px;border:1px solid var(--line);background:var(--bubble-ai);
+  padding:12px 14px;border-radius:18px;box-shadow:0 1px 0 rgba(0,0,0,.03)}
+.msg.user .bubble{background:var(--bubble-user)}
+.role{font-size:12px;color:#647085;margin-bottom:6px}
+.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px;margin-top:8px}
+table{width:100%;border-collapse:collapse;margin-top:6px}
+th,td{border:1px solid var(--line);padding:8px;text-align:left}
+.typing{display:inline-flex;align-items:center;gap:6px}
+.dots{display:inline-flex;gap:4px}
+.dot{width:6px;height:6px;border-radius:50%;background:#9aa6b2;opacity:.6;animation:bounce 1.2s infinite}
+.dot:nth-child(2){animation-delay:.15s}.dot:nth-child(3){animation-delay:.3s}
+@keyframes bounce{0%,80%,100%{transform:translateY(0)}40%{transform:translateY(-4px)}}
 
-  .stream{max-width:820px;margin:0 auto;padding:16px}
-  .msg{display:flex;margin:14px 0}
-  .msg.user{justify-content:flex-end}
-  .bubble{max-width:720px;border:1px solid var(--line);background:var(--bubble-ai);padding:12px 14px;border-radius:18px;box-shadow:0 1px 0 rgba(0,0,0,.03)}
-  .msg.user .bubble{background:var(--bubble-user)}
-  .role{font-size:12px;color:#647085;margin-bottom:6px}
-  .card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px;margin-top:8px}
-  table{width:100%;border-collapse:collapse;margin-top:6px}
-  th,td{border:1px solid var(--line);padding:8px;text-align:left}
+/* Progress Phase bubble */
+[data-phase] .card{
+  background:#f8fafc;border:1px solid var(--line);
+  box-shadow:inset 0 1px 2px rgba(0,0,0,.04)
+}
+[data-phase] h3{margin:0 0 6px 0;font-size:14px;font-weight:600}
 
-  .typing{display:inline-flex;align-items:center;gap:6px}
-  .dots{display:inline-flex;gap:4px}
-  .dot{width:6px;height:6px;border-radius:50%;background:#9aa6b2;opacity:.6;animation:bounce 1.2s infinite}
-  .dot:nth-child(2){animation-delay:.15s}
-  .dot:nth-child(3){animation-delay:.3s}
-  @keyframes bounce{0%,80%,100%{transform:translateY(0)}40%{transform:translateY(-4px)}}
+/* Footer */
+footer{position:sticky;bottom:0;background:var(--panel);border-top:1px solid var(--line);
+  padding:12px 16px;z-index:10}
+.composer{max-width:820px;margin:0 auto}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.box{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);
+  border-radius:14px;padding:8px 10px;flex:1}
+input,button,textarea{font:inherit}
+input[type="text"]{flex:1;border:none;outline:none;background:transparent;padding:8px 6px}
+button{border:none;background:var(--accent);color:#fff;padding:10px 14px;border-radius:12px;
+  font-weight:600;cursor:pointer}
+button.ghost{background:#eef2f7;color:#0b0c10}button:disabled{opacity:.6;cursor:not-allowed}
 
-  footer{position:sticky;bottom:0;background:var(--panel);border-top:1px solid var(--line);padding:12px 16px;z-index:10}
-  .composer{max-width:820px;margin:0 auto}
-  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-  .box{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:8px 10px;flex:1}
-  input,button,textarea{font:inherit}
-  input[type="text"]{flex:1;border:none;outline:none;background:transparent;padding:8px 6px}
-  button{border:none;background:var(--accent);color:#fff;padding:10px 14px;border-radius:12px;font-weight:600;cursor:pointer}
-  button.ghost{background:#eef2f7;color:#0b0c10}
-  button:disabled{opacity:.6;cursor:not-allowed}
+/* Audio + call */
+.audio-note{display:flex;align-items:center;gap:10px}
+.audio-note small{color:#647085}
+.callWrap{display:none;flex-direction:column;align-items:center;justify-content:center;
+  min-height:62vh;padding:8px 0}
+.viz{width:120px;height:120px;border-radius:999px;background:#eaf6ff;border:3px solid #bfe7ff;
+  box-shadow:0 12px 40px rgba(14,165,233,.18);transform:scale(1);
+  transition:transform .08s linear,border-color .15s ease,box-shadow .15s ease}
+.status{margin-top:16px;color:#647085;font-weight:700}
+.prompt{font-size:13px;color:#9aa6b2;margin-top:4px}
 
-  .audio-note{display:flex;align-items:center;gap:10px}
-  .audio-note small{color:#647085}
-
-  .callWrap{display:none;flex-direction:column;align-items:center;justify-content:center;min-height:62vh;padding:8px 0}
-  .viz{
-    width:120px;height:120px;border-radius:999px;background:#eaf6ff;border:3px solid #bfe7ff;
-    box-shadow:0 12px 40px rgba(14,165,233,.18);
-    transform:scale(1);transition:transform .08s linear, border-color .15s ease, box-shadow .15s ease;
-  }
-  .status{margin-top:16px;color:#647085;font-weight:700}
-  .prompt{font-size:13px;color:#9aa6b2;margin-top:4px}
-
-  .modal{position:fixed;inset:0;background:rgba(0,0,0,.35);display:none;align-items:center;justify-content:center;z-index:60}
-  .sheet{width:min(560px,92%);background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px}
-  .sheet h2{margin:0 0 8px 0;font-size:16px}
-  .panel{border:1px solid var(--line);border-radius:12px;padding:12px;background:#fafbff}
-  .panel h3{margin:0 0 8px 0;font-size:14px}
-  .field{display:flex;flex-direction:column;gap:6px;margin:8px 0}
-  .field input,.field textarea{border:1px solid var(--line);border-radius:10px;padding:10px}
-  .small{font-size:12px;color:#647085}
-  .sheet .row{justify-content:flex-end}
+/* Modal */
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.35);display:none;
+  align-items:center;justify-content:center;z-index:60}
+.sheet{width:min(560px,92%);background:#fff;border:1px solid var(--line);
+  border-radius:16px;padding:16px}
+.sheet h2{margin:0 0 8px 0;font-size:16px}
+.panel{border:1px solid var(--line);border-radius:12px;padding:12px;background:#fafbff}
+.field{display:flex;flex-direction:column;gap:6px;margin:8px 0}
+.field input,.field textarea{border:1px solid var(--line);border-radius:10px;padding:10px}
+.small{font-size:12px;color:#647085}
+.sheet .row{justify-content:flex-end}
 </style>
 </head>
 <body>
 <div class="app">
-  <header>
-    <h1 id="companyTitle">Your AI Employee</h1>
-    <div class="toggle" id="modeToggle">
-      <button type="button" data-mode="text" class="active">Text</button>
-      <button type="button" data-mode="voicenote">Voice Note</button>
-      <button type="button" data-mode="call">Call</button>
-    </div>
-    <div class="spacer"></div>
-    <button type="button" id="gearBtn" class="icon-btn" title="Settings">⚙️</button>
-  </header>
+<header>
+  <h1 id="companyTitle">Your AI Employee</h1>
+  <div class="toggle" id="modeToggle">
+    <button type="button" data-mode="text" class="active">Text</button>
+    <button type="button" data-mode="voicenote">Voice Note</button>
+    <button type="button" data-mode="call">Call</button>
+  </div>
+  <div class="spacer"></div>
+  <button type="button" id="gearBtn" class="icon-btn" title="Settings">⚙️</button>
+</header>
 
-  <main id="main">
-    <div id="welcome" class="welcomeOverlay">
-      <div class="welcomeBubble">
-        Hey! I'm your AI assistant.<br/>Ask me anything about your business and I will get it done for you.
-      </div>
-    </div>
-
-    <div id="stream" class="stream" aria-live="polite"></div>
-    <div id="vnStream" class="stream" style="display:none" aria-live="polite"></div>
-
-    <div id="callArea" class="callWrap" aria-live="polite">
-      <div id="viz" class="viz"></div>
-      <div id="callStatus" class="status">Tell me, how can I help you today?</div>
-      <div class="prompt">Hands-free: just speak. I’ll answer out loud, then listen again.</div>
-      <audio id="remoteAudio" autoplay playsinline></audio>
-    </div>
-  </main>
-
-  <footer>
-    <div id="textFooter" class="composer">
-      <div class="row box">
-        <input id="prompt" type="text" placeholder="What can I do for you today" />
-        <button id="send" type="button">Send</button>
-      </div>
-    </div>
-
-    <div id="vnFooter" class="composer" style="display:none">
-      <div class="row box" style="justify-content:center">
-        <button id="vnToggle" class="ghost" type="button">● Record</button>
-        <button id="vnSend" type="button" disabled>Send</button>
-      </div>
-    </div>
-  </footer>
-</div>
-
-<!-- SETTINGS MODAL -->
-<div id="kbModal" class="modal" aria-hidden="true">
-  <div class="sheet" role="dialog" aria-modal="true" aria-label="Settings">
-    <h2>Settings</h2>
-    <div class="panel">
-      <h3>Contact for Demo Actions</h3>
-      <div class="field">
-        <label>Phone (E.164) <span class="small">Used for WhatsApp & Calls</span></label>
-        <input id="setPhone" type="tel" placeholder="+34 600 000 000" />
-      </div>
-      <div class="field">
-        <label>Email <span class="small">Used for Email actions</span></label>
-        <input id="setEmail" type="email" placeholder="client@company.com" />
-      </div>
-      <div class="field">
-        <label>Test message (optional)</label>
-        <textarea id="testMsg" placeholder="Message for test actions"></textarea>
-      </div>
-      <div class="row" style="gap:8px">
-        <button id="testWA" class="ghost" type="button">Test WhatsApp</button>
-        <button id="testCall" class="ghost" type="button">Test Call</button>
-        <button id="testEmail" class="ghost" type="button">Test Email</button>
-        <div class="spacer"></div>
-        <button id="kbSave" title="Save settings" type="button">Save</button>
-        <button id="kbCancel" class="ghost" type="button">Close</button>
-      </div>
+<main id="main">
+  <div id="welcome" class="welcomeOverlay">
+    <div class="welcomeBubble">
+      Hey! I'm your AI assistant.<br/>Ask me anything about your business and I will get it done for you.
     </div>
   </div>
-</div>
+  <div id="stream" class="stream" aria-live="polite"></div>
+  <div id="vnStream" class="stream" style="display:none" aria-live="polite"></div>
+  <div id="callArea" class="callWrap" aria-live="polite">
+    <div id="viz" class="viz"></div>
+    <div id="callStatus" class="status">Tell me, how can I help you today?</div>
+    <div class="prompt">Hands-free: just speak. I’ll answer out loud, then listen again.</div>
+    <audio id="remoteAudio" autoplay playsinline></audio>
+  </div>
+</main>
 
+<footer>
+  <div id="textFooter" class="composer">
+    <div class="row box">
+      <input id="prompt" type="text" placeholder="What can I do for you today"/>
+      <button id="send" type="button">Send</button>
+    </div>
+  </div>
+  <div id="vnFooter" class="composer" style="display:none">
+    <div class="row box" style="justify-content:center">
+      <button id="vnToggle" class="ghost" type="button">● Record</button>
+      <button id="vnSend" type="button" disabled>Send</button>
+    </div>
+  </div>
+</footer>
 <script>
 /* ====== Tenant bootstrap (optional) ====== */
 window.__KB__ = window.__KB__ || null;
@@ -173,10 +146,10 @@ window.__TOKEN__  = window.__TOKEN__  || null;
   const qs = new URLSearchParams(location.search);
   const tenant = qs.get('tenant');
   const token  = qs.get('token');
-
-  if (!tenant || !token) return;
+  if (!tenant || !token) return; // UI still works without personalization
 
   try {
+    // attempt to preload via script (faster)
     await new Promise((ok, err) => {
       const s = document.createElement('script');
       s.src = `/api/tenantBootstrap?tenant=${encodeURIComponent(tenant)}&token=${encodeURIComponent(token)}`;
@@ -194,7 +167,7 @@ window.__TOKEN__  = window.__TOKEN__  || null;
         window.__TENANT__ = tenant;
         window.__TOKEN__  = token;
       }
-    } catch (e) { console.warn('tenantGet fallback failed:', e); }
+    } catch (e) { console.warn('tenantGet failed:', e); }
   }
 
   try {
@@ -209,8 +182,8 @@ window.__TOKEN__  = window.__TOKEN__  || null;
 
 <script>
 /* ====== Elements & state ====== */
-let messages = [];       // Text mode
-let vnMessages = [];     // Voice Note mode
+let messages = [];       // Text mode transcript
+let vnMessages = [];     // Voice Note transcript
 let firstUserMessageSent = false;
 
 const $modeToggle = document.getElementById('modeToggle');
@@ -242,18 +215,26 @@ const $testEmail= document.getElementById('testEmail');
 
 const $welcome = document.getElementById('welcome');
 
-/* Load saved contacts */
-try { const savedPhone = localStorage.getItem('demo_contact_phone'); if (savedPhone) $setPhone.value = savedPhone; } catch {}
-try { const savedEmail = localStorage.getItem('demo_contact_email'); if (savedEmail) $setEmail.value = savedEmail; } catch {}
+/* Restore saved demo contacts */
+try { const v = localStorage.getItem('demo_contact_phone'); if (v) $setPhone.value = v; } catch {}
+try { const v = localStorage.getItem('demo_contact_email'); if (v) $setEmail.value = v; } catch {}
 
 /* ====== Helpers ====== */
 function esc(s){ return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
-function tableHTML(t){ if(!t||!t.columns||!t.rows) return ''; let h='<table><thead><tr>'; for(const c of t.columns) h+=`<th>${esc(String(c))}</th>`; h+='</tr></thead><tbody>'; for(const r of t.rows) h+='<tr>'+r.map(v=>`<td>${esc(String(v))}</td>`).join('')+'</tr>'; h+='</tbody></table>'; return h; }
+function tableHTML(t){
+  if(!t||!t.columns||!t.rows) return '';
+  let h='<table><thead><tr>';
+  for(const c of t.columns) h+=`<th>${esc(String(c))}</th>`;
+  h+='</tr></thead><tbody>';
+  for(const r of t.rows) h+='<tr>'+r.map(v=>`<td>${esc(String(v))}</td>`).join('')+'</tr>';
+  h+='</tbody></table>';
+  return h;
+}
 function scrollToBottom(el){ el.scrollTo({ top: el.scrollHeight, behavior:'smooth' }); }
 
-/* ====== Typing indicator per-burst ====== */
+/* Typing indicator used before each burst */
 function showTyping(targetStreamEl){
-  const wrap = document.createElement('div'); wrap.className='msg';
+  const wrap = document.createElement('div'); wrap.className='msg assistant';
   wrap.innerHTML = `<div class="bubble"><div class="role">Your AI Employee</div>
     <span class="typing"><span>typing</span>
       <span class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
@@ -267,7 +248,7 @@ function humanDelayFor(text){
   return Math.max(900, Math.min(1800, Math.round(len * 8)));
 }
 
-/* ===== Status HUD ===== */
+/* Lightweight status HUD (kept for debugging; optional) */
 function makeStatusHUD(targetStreamEl){
   const wrap = document.createElement('div');
   wrap.className = 'msg assistant';
@@ -292,14 +273,69 @@ function makeStatusHUD(targetStreamEl){
     scrollToBottom(targetStreamEl);
   };
   const replaceLast = (text) => { const last = list.lastElementChild; if (last) last.textContent = text; };
+  return { add, replaceLast, remove: () => wrap.remove() };
+}
+</script>
+<script>
+/* ====== Remove Call Mode UI (per your request) ====== */
+(function removeCallModeUI(){
+  // Remove the "Call" button if present
+  const btnCall = document.querySelector('#modeToggle [data-mode="call"]');
+  if (btnCall) btnCall.remove();
+  // Remove the call area block if present
+  const callArea = document.getElementById('callArea');
+  if (callArea) callArea.remove();
+})();
 
-  return { add, replaceLast, done: () => wrap.removeAttribute('data-hud'), remove: () => wrap.remove() };
+/* ====== Thinking / Progress Phase Renderer ====== */
+function showPhases(phases, targetStreamEl) {
+  const wrap = document.createElement('div');
+  wrap.className = 'msg assistant';
+  wrap.dataset.phase = '1';
+
+  wrap.innerHTML = `
+    <div class="bubble">
+      <div class="role">Your AI Employee</div>
+      <div class="card" id="phaseCard">
+        <h3>Processing your request</h3>
+        <div id="phaseBar" style="height:6px;width:100%;background:#e2e8f0;border-radius:6px;margin:8px 0;overflow:hidden;">
+          <div id="phaseFill" style="width:0%;height:100%;background:var(--accent);transition:width .4s ease;"></div>
+        </div>
+        <ul id="phaseList" style="list-style:none;padding:0;margin:0;font-size:13px;color:#475569;line-height:1.5;"></ul>
+      </div>
+    </div>
+  `;
+
+  targetStreamEl.appendChild(wrap);
+  scrollToBottom(targetStreamEl);
+
+  const list = wrap.querySelector('#phaseList');
+  const fill = wrap.querySelector('#phaseFill');
+
+  async function animatePhases(phArr) {
+    // If phases passed now, animate them. If empty, we still show the shell HUD.
+    for (let i = 0; i < (phArr || []).length; i++) {
+      const p = phArr[i] || {};
+      const li = document.createElement('li');
+      li.textContent = p.text || 'Working…';
+      list.appendChild(li);
+      if (typeof p.progress === 'number') {
+        fill.style.width = `${Math.max(0, Math.min(100, p.progress))}%`;
+      }
+      scrollToBottom(targetStreamEl);
+      await new Promise(r => setTimeout(r, 500 + Math.random() * 450));
+    }
+  }
+
+  animatePhases(phases || []);
+  // return a disposer to remove the HUD
+  return () => wrap.remove();
 }
 
-/* ====== Shared renderer (no blocking) ====== */
+/* ====== Burst + Cards Renderer ====== */
 async function renderFinalAnswer(resp, targetStreamEl, targetMessages){
   try{
-    // 1) bursts
+    // 1) bursts (human-like chunks)
     const bursts = Array.isArray(resp?.script) ? resp.script : [];
     for (let i=0;i<bursts.length;i++){
       const b = bursts[i] || {};
@@ -308,8 +344,10 @@ async function renderFinalAnswer(resp, targetStreamEl, targetMessages){
       await new Promise(r=>setTimeout(r, wait));
       removeTyping();
 
+      // show_role only in first message of the burst group
       const roleHdr = (b.show_role || i===0) ? '<div class="role">Your AI Employee</div>' : '';
-      const wrap = document.createElement('div'); wrap.className='msg assistant';
+      const wrap = document.createElement('div'); 
+      wrap.className='msg assistant';
       wrap.innerHTML = `<div class="bubble">${roleHdr}${esc(b.text||'')}</div>`;
       targetStreamEl.appendChild(wrap);
       scrollToBottom(targetStreamEl);
@@ -317,7 +355,7 @@ async function renderFinalAnswer(resp, targetStreamEl, targetMessages){
       targetMessages.push({ role:'assistant', html: esc(b.text||''), raw:{ meta: resp.meta||{} } });
     }
 
-    // 2) cards
+    // 2) cards (visual results)
     const cards = Array.isArray(resp?.cards) ? resp.cards : [];
     if (cards.length){
       const container = document.createElement('div'); container.className='msg assistant';
@@ -330,6 +368,10 @@ async function renderFinalAnswer(resp, targetStreamEl, targetMessages){
           const v = c.value||{};
           inner.innerHTML += `<div class="card"><h3>${esc(c.summary||'File')}</h3>
             <a href="${esc(v.url||'#')}" target="_blank" rel="noopener">${esc(v.name||'Download')}</a></div>`;
+        } else if (c.format === 'image') {
+          const v = c.value||{};
+          inner.innerHTML += `<div class="card"><h3>${esc(c.summary||'Preview')}</h3>
+            <img src="${esc(v.url||'')}" alt="${esc(c.summary||'preview')}" style="max-width:100%;border-radius:10px;border:1px solid var(--line)"/></div>`;
         } else {
           inner.innerHTML += `<div class="card"><h3>${esc(c.summary||'Result')}</h3><div>${esc(c.value||'')}</div></div>`;
         }
@@ -340,7 +382,7 @@ async function renderFinalAnswer(resp, targetStreamEl, targetMessages){
       targetMessages.push({ role:'assistant', html: inner.innerHTML, raw:{ meta: resp.meta||{} } });
     }
 
-    // 3) ask options
+    // 3) ask options (confirmation / next step)
     if (resp?.ask) renderAsk(resp.ask);
 
   }catch(e){
@@ -365,11 +407,12 @@ function renderAsk(askObj){
     </div>
   </div>`;
   $stream.appendChild(wrap); scrollToBottom($stream);
+
   wrap.querySelectorAll('button[data-o]').forEach(btn=>{
     btn.addEventListener('click', async ()=>{
       const choice = btn.getAttribute('data-o');
       const client = { phone: getPhone(), email: getEmail() };
-      const body = { utterance: `deliver via ${choice}`, client };
+      const body = { utterance: `deliver via ${choice}`, client, mode:'text' };
 
       if (window.__TENANT__ && window.__TOKEN__) {
         body.tenant = window.__TENANT__; body.token  = window.__TOKEN__;
@@ -377,8 +420,11 @@ function renderAsk(askObj){
         body.kb_json = window.__KB__; body.company_system_prompt = window.__SYS_PROMPT__;
       }
 
+      // Show a tiny phases HUD for the follow-up action
+      const removeHUD = showPhases([{text:'Processing…',progress:20},{text:'Executing…',progress:70},{text:'Finalizing…',progress:100}], $stream);
       const r = await fetch('/api/demoAgent',{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
       const resp = await r.json();
+      removeHUD();
       await renderFinalAnswer(resp, $stream, messages);
     });
   });
@@ -386,7 +432,8 @@ function renderAsk(askObj){
 
 /* ====== API & history ====== */
 function historyForAPI(){
-  const h=[]; for(const m of messages){
+  const h=[]; 
+  for(const m of messages){
     if(m.role==='user') h.push({role:'user',text:m.html.replace(/<[^>]+>/g,'')});
     if(m.role==='assistant'&&m.raw?.meta) h.push({role:'assistant',intent:m.raw.meta.intent,entities:m.raw.entities||{}});
   }
@@ -407,7 +454,7 @@ async function askAPI(text){
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort('timeout'), 15000); // 15s timeout
+  const timeout = setTimeout(() => controller.abort('timeout'), 20000); // 20s timeout
 
   try {
     const r = await fetch('/api/demoAgent',{
@@ -432,63 +479,70 @@ async function askAPI(text){
   }
 }
 
-/* ====== Text mode ====== */
+/* ====== Renderers for transcript + Send (Text mode) ====== */
 function renderText(){
   $stream.innerHTML = messages.map(m=>{
     const role = m.role==='user'?'user':'assistant';
-    return `<div class="msg ${role}"><div class="bubble">${role==='user'?'<div class="role">You</div>':'<div class="role">Your AI Employee</div>'}${m.html}</div></div>`;
+    return `<div class="msg ${role}"><div class="bubble">${
+      role==='user'
+        ? '<div class="role">You</div>'
+        : '<div class="role">Your AI Employee</div>'
+    }${m.html}</div></div>`;
   }).join('');
   scrollToBottom($stream);
 }
 function pushUser(text){
-  messages.push({role:'user', html:esc(text)}); renderText();
+  messages.push({role:'user', html:esc(text)});
+  renderText();
   if (!firstUserMessageSent) { firstUserMessageSent = true; $welcome.style.display='none'; }
 }
-function sendText(){
-  const t = $prompt.value.trim(); if(!t) return;
-  pushUser(t); $prompt.value='';
 
-  // Live HUD
-  const hud = makeStatusHUD($stream);
-  hud.add('Understanding your request…');
-  setTimeout(()=> hud.add('Planning the steps…'), 700);
-  setTimeout(()=> hud.add('Waiting for /api/demoAgent…'), 1100);
+function sendText(){
+  const t = $prompt.value.trim(); 
+  if(!t) return;
+  pushUser(t); 
+  $prompt.value='';
+
+  // Start the “thinking” HUD immediately (empty list; will be replaced if backend sends phases)
+  let removeHUD = showPhases([], $stream);
 
   askAPI(t)
     .then(async (resp)=>{
-      hud.add('Received response. Parsing…');
-      try {
-        const steps = resp?.meta?.steps || resp?.meta?.logs || [];
-        if (Array.isArray(steps)) {
-          for (const s of steps) {
-            const line = typeof s === 'string' ? s : (s?.msg || JSON.stringify(s));
-            hud.add(line);
-          }
-        }
-      } catch {}
-      hud.add('Rendering result…');
-      hud.remove();
+      // If backend provided phases, re-render the HUD with real steps and wait briefly
+      if (Array.isArray(resp?.phases) && resp.phases.length){
+        removeHUD(); // remove the empty HUD
+        removeHUD = showPhases(resp.phases, $stream);
+        await new Promise(r=>setTimeout(r, 800)); // short pause before showing bursts
+      }
+      removeHUD(); // clean the HUD
       await renderFinalAnswer(resp, $stream, messages);
     })
     .catch(e=>{
-      hud.add('Something went wrong.', 'error');
-      hud.add(String(e.message || e), 'error');
-      hud.add('Tip: check /api/health or Vercel logs.', 'warn');
+      removeHUD();
+      const wrap = document.createElement('div'); wrap.className='msg assistant';
+      wrap.innerHTML = `<div class="bubble"><div class="role">Your AI Employee</div>
+        <div class="card"><h3>Error</h3><div>${esc(String(e.message||e))}</div></div></div>`;
+      $stream.appendChild(wrap);
+      scrollToBottom($stream);
     });
 }
-$send.addEventListener('click', sendText);
-$prompt.addEventListener('keydown', e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendText(); }});
 
-/* ====== Voice Note (kept minimal; uses same renderer) ====== */
+/* Bind send */
+$send.addEventListener('click', sendText);
+$prompt.addEventListener('keydown', e=>{
+  if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendText(); }
+});
+</script>
+<script>
+/* ====== Voice Note (kept; no Call mode) ====== */
 let vnMediaRec=null, vnChunks=[], vnBlob=null, vnMime=null, vnDurationSec=0, vnStartAt=0, vnStreamLive=null;
+
 function renderVN(){
   $vnStream.innerHTML = vnMessages.map(m=>{
-    const role = m.role==='user'?'user':'assistant';
+    const role = m.role==='user' ? 'user' : 'assistant';
     return `<div class="msg ${role}"><div class="bubble">${
-      role==='user'
-        ? '<div class="role">You (voice note)</div>' + m.html
-        : '<div class="role">Your AI Employee</div>' + m.html
-    }</div></div>`;
+      role==='user' ? '<div class="role">You (voice note)</div>' : '<div class="role">Your AI Employee</div>'
+    }${m.html}</div></div>`;
   }).join('');
   scrollToBottom($vnStream);
 }
@@ -498,6 +552,7 @@ function vnPushAudio(url, durationSec){
   if (!firstUserMessageSent){ firstUserMessageSent=true; $welcome.style.display='none'; }
 }
 const vnPerms = { audio: { echoCancellation:true, noiseSuppression:true, autoGainControl:true } };
+
 document.getElementById('vnToggle').addEventListener('click', async ()=>{
   if (vnMediaRec && vnMediaRec.state === 'recording') {
     try { vnMediaRec.stop(); } catch {}
@@ -510,24 +565,31 @@ document.getElementById('vnToggle').addEventListener('click', async ()=>{
     vnMime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
     vnMediaRec = new MediaRecorder(vnStreamLive,{ mimeType: vnMime });
     vnChunks = []; vnStartAt = Date.now(); vnBlob = null; vnDurationSec = 0;
+
     vnMediaRec.ondataavailable = e=>{ if (e.data?.size) vnChunks.push(e.data); };
-    vnMediaRec.onstart = ()=>{ document.getElementById('vnToggle').textContent='■ Stop'; document.getElementById('vnSend').disabled=true; };
+    vnMediaRec.onstart = ()=>{
+      document.getElementById('vnToggle').textContent='■ Stop';
+      document.getElementById('vnSend').disabled=true;
+    };
     vnMediaRec.onstop = ()=>{
       vnDurationSec = (Date.now()-vnStartAt)/1000;
       vnBlob = new Blob(vnChunks,{type: vnMime});
       try { vnStreamLive.getTracks().forEach(t=>t.stop()); } catch {}
-      document.getElementById('vnSend').disabled=false; document.getElementById('vnToggle').textContent='● Record';
+      document.getElementById('vnSend').disabled=false;
+      document.getElementById('vnToggle').textContent='● Record';
     };
     vnMediaRec.start();
-  }catch(e){ alert('Mic permission needed'); }
+  }catch(e){ alert('Microphone permission needed'); }
 });
+
 document.getElementById('vnSend').addEventListener('click', async ()=>{
   if(!vnBlob) return;
   const url = URL.createObjectURL(vnBlob);
   vnPushAudio(url, vnDurationSec);
   document.getElementById('vnSend').disabled = true;
 
-  const base64 = await (new Promise(res=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.readAsDataURL(vnBlob); }));
+  // encode and send to /api/transcribe
+  const base64 = await new Promise(res=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.readAsDataURL(vnBlob); });
   const res = await fetch('/api/transcribe', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({ audio: base64, mime: vnMime })
@@ -543,85 +605,14 @@ document.getElementById('vnSend').addEventListener('click', async ()=>{
     .catch(()=>{ vnMessages.push({ role:'assistant', html:`<div class="card"><h3>Error</h3><div>Sorry, there was an error.</div></div>`}); renderVN(); document.getElementById('vnSend').disabled=false; });
 });
 
-/* ====== Call mode (light visualizer) ====== */
-let sr=null, speaking=false, listening=false, gateThresh=0.02;
-function sttAvailable(){ return !!(window.SpeechRecognition || window.webkitSpeechRecognition); }
-let audioCtx=null, analyser=null, rafId=null;
-function startVizFallback(){
-  if (audioCtx) return;
-  (async ()=>{
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation:true, noiseSuppression:true, autoGainControl:true, channelCount:1 }
-    });
-    audioCtx = new (window.AudioContext||window.webkitAudioContext)();
-    const src = audioCtx.createMediaStreamSource(stream);
-    const hpf = audioCtx.createBiquadFilter(); hpf.type='highpass'; hpf.frequency.value = 120;
-    analyser = audioCtx.createAnalyser(); analyser.fftSize = 1024;
-    src.connect(hpf).connect(analyser);
-    const data = new Float32Array(analyser.fftSize);
-    function tick(now){
-      analyser.getFloatTimeDomainData(data);
-      let sum=0; for(let i=0;i<data.length;i++){ const v=data[i]; sum+=v*v; }
-      const rms=Math.sqrt(sum/data.length);
-      const gated = rms > gateThresh;
-      if(listening && gated){
-        $viz.style.borderColor='var(--listen)';
-        $viz.style.boxShadow='0 12px 40px rgba(16,185,129,.22)';
-        const scale=1+Math.min(1.0,rms*3.8); $viz.style.transform=`scale(${scale.toFixed(2)})`;
-      }else if(speaking){
-        const t=now/520; const scale=1+0.07*Math.sin(t*2*Math.PI);
-        $viz.style.transform=`scale(${scale.toFixed(2)})`;
-        $viz.style.borderColor='var(--speak)';
-      }else{
-        $viz.style.transform='scale(1)';
-        $viz.style.borderColor='#bfe7ff';
-        $viz.style.boxShadow='0 12px 40px rgba(14,165,233,.18)';
-      }
-      rafId=requestAnimationFrame(tick);
-    }
-    rafId=requestAnimationFrame(tick);
-  })();
-}
-let selectedVoice=null;
-function getVoicesOnce(){ return new Promise(r=>{ const v=speechSynthesis.getVoices(); if(v&&v.length) return r(v); speechSynthesis.onvoiceschanged=()=>r(speechSynthesis.getVoices()); }); }
-async function pickEnglishVoice(){ const voices=await getVoicesOnce(); const prefer=[/en-US.*(Female|Samantha|Google US|Jenny|America|Alloy|Natural)/i,/en-GB/i,/en-/i]; for(const rx of prefer){ const hit=voices.find(v=>rx.test(`${v.name} ${v.lang}`)); if(hit) return hit; } return voices[0]||null; }
-async function speakFallback(t){ if(!window.speechSynthesis) return; if(!selectedVoice) selectedVoice=await pickEnglishVoice(); speaking=true; listening=false; const u=new SpeechSynthesisUtterance(t||''); u.lang='en-US'; u.voice=selectedVoice||null; u.rate=1; u.pitch=1; speechSynthesis.cancel(); speechSynthesis.speak(u); u.onend=()=>{ speaking=false; startListenFallback(); }; }
-function startListenFallback(){
-  if(!sttAvailable()){ $callStatus.textContent='Microphone not supported.'; return; }
-  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-  try{ sr && sr.abort(); }catch{}
-  sr=new SR(); sr.lang='en-US'; sr.interimResults=true; sr.continuous=true;
-  listening=true; $callStatus.textContent="Tell me, how can I help you today?";
-  let final='';
-  sr.onresult=(e)=>{ for(let i=e.resultIndex;i<e.results.length;i++){ const r=e.results[i]; if(r.isFinal){ final=r[0].transcript.trim(); if(final){ try{ sr.abort(); }catch{} listening=false; $callStatus.textContent='…'; askAPI(final).then(resp=>{ (async ()=>{ await speakFallback((resp?.script?.at(-1)?.text)||'Here is your update.'); })(); }); }}} };
-  sr.onerror=()=>{ listening=false; setTimeout(startListenFallback,250); };
-  sr.onend=()=>{ if(!speaking) setTimeout(startListenFallback,120); };
-  try{ sr.start(); }catch{ setTimeout(startListenFallback,200); }
-}
-
-/* ====== Mode switching ====== */
+/* ====== Mode switching (Text / Voice Note only) ====== */
 function enterTextMode(){
   $stream.style.display='block'; $vnStream.style.display='none';
   $textFooter.style.display='block'; $vnFooter.style.display='none';
-  leaveCallMode();
 }
 function enterVoiceNoteMode(){
   $stream.style.display='none'; $vnStream.style.display='block';
   $textFooter.style.display='none'; $vnFooter.style.display='block';
-  leaveCallMode();
-}
-async function enterCallMode(){
-  $stream.style.display='none'; $vnStream.style.display='none';
-  $textFooter.style.display='none'; $vnFooter.style.display='none';
-  $callArea.style.display='flex';
-  startVizFallback();
-  speakFallback('Listening.');
-}
-function leaveCallMode(){
-  try{ sr && sr.abort(); }catch{} try{ speechSynthesis.cancel(); }catch{}
-  listening=false; speaking=false;
-  $viz.style.transform='scale(1)'; $viz.style.borderColor='#bfe7ff'; $viz.style.boxShadow='0 12px 40px rgba(14,165,233,.18)';
-  $callArea.style.display='none';
 }
 $modeToggle.addEventListener('click', (e)=>{
   const btn=e.target.closest('button'); if(!btn) return;
@@ -630,7 +621,6 @@ $modeToggle.addEventListener('click', (e)=>{
   const m=btn.dataset.mode;
   if (m==='text') enterTextMode();
   else if (m==='voicenote') enterVoiceNoteMode();
-  else if (m==='call') enterCallMode();
 });
 
 /* ====== Settings modal ====== */
@@ -644,28 +634,28 @@ $kbSave.addEventListener('click', ()=>{
   closeKB();
 });
 
-/* Settings: test actions */
+/* Settings: test actions (keep Call test if your backend endpoint exists; otherwise comment it out) */
 $testWA.addEventListener('click', async ()=>{
-  const to = getPhone(); if(!to) return alert('Enter a phone first.');
+  const to = ($setPhone.value||'').trim(); if(!to) return alert('Enter a phone first.');
   const body = ($testMsg.value||'Hello from Your AI Employee (test).').trim();
   const r = await fetch('/api/sendWhatsApp',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to, body })});
   const j = await r.json(); alert(j.ok ? 'WhatsApp sent ✓' : ('WhatsApp error: ' + j.error));
 });
 $testCall.addEventListener('click', async ()=>{
-  const to = getPhone(); if(!to) return alert('Enter a phone first.');
+  const to = ($setPhone.value||'').trim(); if(!to) return alert('Enter a phone first.');
   const message = ($testMsg.value||'This is a test call from Your AI Employee.').trim();
   const r = await fetch('/api/call',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to, message })});
   const j = await r.json(); alert(j.ok ? 'Calling now ✓' : ('Call error: ' + j.error));
 });
 $testEmail.addEventListener('click', async ()=>{
-  const to = getEmail(); if(!to) return alert('Enter an email first.');
+  const to = ($setEmail.value||'').trim(); if(!to) return alert('Enter an email first.');
   const subject = 'Your AI Employee — Test Email';
   const html = `<p>${esc(($testMsg.value||'Hello from Your AI Employee (test).').trim())}</p>`;
   const r = await fetch('/api/sendMailgun',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to, subject, html })});
   const j = await r.json(); alert(j.ok ? 'Email sent ✓' : ('Email error: ' + j.error));
 });
 
-/* ====== Welcome ====== */
+/* ====== Welcome overlay ====== */
 function ensureWelcome(){
   if (firstUserMessageSent) $welcome.style.display='none';
   else $welcome.style.display='flex';
