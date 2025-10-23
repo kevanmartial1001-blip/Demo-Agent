@@ -1,209 +1,623 @@
-// /api/demoAgent.js
-// Fast, non-blocking proactive demo agent. Always returns immediately.
-// Switch to the real tool runner by setting AGENT_REAL_TOOLS=1 later.
-
-module.exports.config = { runtime: "nodejs18.x" };
-
-const MODEL = process.env.OPENAI_AGENT_MODEL || "gpt-4o-mini";
-const MAX_JSON_CHARS = 120000;
-const REAL_TOOLS = String(process.env.AGENT_REAL_TOOLS || "") === "1";
-
-const traceId = () => "trc_" + Math.random().toString(36).slice(2, 10);
-
-// --- helpers ----------------------------------------------------------------
-function protectBurst(text) {
-  if (!text) return [];
-  const protectedAbbrevs = ["Mr\\.", "Mrs\\.", "Ms\\.", "Dr\\.", "Sr\\.", "Sra\\.", "Prof\\.", "St\\.", "vs\\."];
-  const guard = new RegExp(`^(?:${protectedAbbrevs.join("|")})$`);
-  const out = [];
-  let buf = "";
-  for (const part of text.split(/(\.|\?|!)/)) {
-    if (!part) continue;
-    buf += part;
-    if (/[.!?]$/.test(buf)) {
-      const tail = (buf.trim().split(/\s+/).slice(-1)[0] || "");
-      if (guard.test(tail)) continue;
-      out.push(buf.trim());
-      buf = "";
-    }
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Your AI Employee</title>
+<style>
+  :root{
+    --bg:#f6f7fb; --panel:#ffffff; --ink:#0b0c10; --muted:#647085; --line:#e6e8f0; --accent:#0ea5e9;
+    --bubble-user:#e8f3ff; --bubble-ai:#ffffff; --welcome:#eef1f6;
+    --speak:#1e90ff; --listen:#10b981;
+    --ok:#16a34a; --warn:#f59e0b;
   }
-  if (buf.trim()) out.push(buf.trim());
-  // soft reflow to keep messages short
-  const bursts = [];
-  for (const s of out) {
-    if (s.length <= 180) { bursts.push(s); continue; }
-    const bits = s.split(/, /);
-    let acc = "";
-    for (const b of bits) {
-      const next = acc ? acc + ", " + b : b;
-      if (next.length > 180) { if (acc) bursts.push(acc + "."); acc = b; }
-      else acc = next;
-    }
-    if (acc) bursts.push(acc + ".");
+  *{box-sizing:border-box} html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 ui-sans-serif,system-ui,Inter,Segoe UI,Arial}
+  .app{display:flex;flex-direction:column;height:100%}
+
+  header{position:sticky;top:0;background:var(--panel);border-bottom:1px solid var(--line);
+    padding:12px 16px;display:flex;align-items:center;gap:12px;z-index:50}
+  header h1{font-size:15px;font-weight:600;margin:0}
+  .toggle{display:flex;border:1px solid var(--line);border-radius:999px;overflow:hidden}
+  .toggle button{border:none;background:#fff;padding:8px 12px;cursor:pointer;font-weight:600;color:#334155}
+  .toggle button.active{background:var(--ink);color:#fff}
+  .spacer{flex:1}
+  .icon-btn{width:38px;height:38px;border-radius:10px;border:1px solid var(--line);display:flex;align-items:center;justify-content:center;background:#fff;cursor:pointer}
+
+  main{flex:1;overflow:auto;position:relative}
+  .welcomeOverlay{
+    position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    pointer-events:none; z-index:1;
   }
-  return bursts.slice(0, 6);
-}
+  .welcomeBubble{
+    background:var(--welcome); border:1px solid var(--line); color:#4b5563;
+    padding:18px 20px; border-radius:16px; text-align:center; max-width:560px;
+  }
 
-function extractClientName(utterance = "") {
-  const m = utterance.match(/\b(Mr\.|Mrs\.|Ms\.|Dr\.)\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)/);
-  return m ? `${m[1]} ${m[2]}` : "Mr. Martin";
-}
+  .stream{max-width:820px;margin:0 auto;padding:16px}
+  .msg{display:flex;margin:14px 0}
+  .msg.user{justify-content:flex-end}
+  .bubble{max-width:720px;border:1px solid var(--line);background:var(--bubble-ai);padding:12px 14px;border-radius:18px;box-shadow:0 1px 0 rgba(0,0,0,.03)}
+  .msg.user .bubble{background:var(--bubble-user)}
+  .role{font-size:12px;color:#647085;margin-bottom:6px}
+  .card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px;margin-top:8px}
+  table{width:100%;border-collapse:collapse;margin-top:6px}
+  th,td{border:1px solid var(--line);padding:8px;text-align:left}
 
-function needsAgent(utterance = "") {
-  const u = utterance.toLowerCase();
-  const verbs = ["invoice","bill","quote","proposal","schedule","meeting","calendar","send","email","whatsapp","generate","draft","prepare","create","presentation","research","upload","export","order","payment","ship","delivery"];
-  return verbs.some(v => u.includes(v));
-}
+  .typing{display:inline-flex;align-items:center;gap:6px}
+  .dots{display:inline-flex;gap:4px}
+  .dot{width:6px;height:6px;border-radius:50%;background:#9aa6b2;opacity:.6;animation:bounce 1.2s infinite}
+  .dot:nth-child(2){animation-delay:.15s}
+  .dot:nth-child(3){animation-delay:.3s}
+  @keyframes bounce{0%,80%,100%{transform:translateY(0)}40%{transform:translateY(-4px)}}
 
-function demoDoc({ customer = "Mr. Martin", amount = 1250, currency = "€", kind = "Invoice" } = {}) {
-  const id = (kind === "Quote" ? "Q-" : "INV-") + Math.random().toString(36).slice(2, 7).toUpperCase();
-  const dateStr = new Date().toISOString().slice(0, 10);
-  return {
-    id, kind, customer, date: dateStr, subtotal: amount, tax: 0, total: amount, currency,
-    items: [{ description: `${kind} for services`, qty: 1, unit_price: amount, total: amount }],
-    pdf_url: `https://placehold.co/980x1380/pdf?text=${encodeURIComponent(kind)}%20${encodeURIComponent(id)}%20for%20${encodeURIComponent(customer)}`
-  };
-}
+  footer{position:sticky;bottom:0;background:var(--panel);border-top:1px solid var(--line);padding:12px 16px;z-index:10}
+  .composer{max-width:820px;margin:0 auto}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .box{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:8px 10px;flex:1}
+  input,button,textarea{font:inherit}
+  input[type="text"]{flex:1;border:none;outline:none;background:transparent;padding:8px 6px}
+  button{border:none;background:var(--accent);color:#fff;padding:10px 14px;border-radius:12px;font-weight:600;cursor:pointer}
+  button.ghost{background:#eef2f7;color:#0b0c10}
+  button:disabled{opacity:.6;cursor:not-allowed}
 
-function mkTableCard(doc) {
-  return {
-    format: "table",
-    summary: `Draft ${doc.kind} (demo)`,
-    value: {
-      columns: [`${doc.kind} #`, "Customer", "Date", "Subtotal", "Tax", "Total"],
-      rows: [[doc.id, doc.customer, doc.date, `${doc.currency}${doc.subtotal}`, `${doc.currency}${doc.tax}`, `${doc.currency}${doc.total}`]]
-    }
-  };
-}
+  .audio-note{display:flex;align-items:center;gap:10px}
+  .audio-note small{color:#647085}
 
-function briefFromKB(kb) {
-  if (!kb || typeof kb !== "object") return "No KB loaded.";
-  const meta = kb.meta || {};
-  const co = meta.company || {};
-  const sections = kb.sections || {};
-  const counts = Object.fromEntries(Object.entries(sections).map(([k, v]) => [k, Array.isArray(v) ? v.length : 0]));
-  return [
-    `Company: ${co.name || "unknown"} (${co.domain || "unknown"})`,
-    `Homepage: ${co.homepage_url || co.url || "unknown"}`,
-    `KB version: ${meta.kb_version || "unknown"}`,
-    `Sections: ${Object.entries(counts).map(([k, n]) => `${k}(${n})`).join(", ") || "none"}`,
-  ].join("\n");
-}
+  .callWrap{display:none;flex-direction:column;align-items:center;justify-content:center;min-height:62vh;padding:8px 0}
+  .viz{
+    width:120px;height:120px;border-radius:999px;background:#eaf6ff;border:3px solid #bfe7ff;
+    box-shadow:0 12px 40px rgba(14,165,233,.18);
+    transform:scale(1);transition:transform .08s linear, border-color .15s ease, box-shadow .15s ease;
+  }
+  .status{margin-top:16px;color:#647085;font-weight:700}
+  .prompt{font-size:13px;color:#9aa6b2;margin-top:4px}
 
-async function kbAnswerWithLLM({ kb_json, company_system_prompt, user, history = [], mode = "text" }) {
-  if (!process.env.OPENAI_API_KEY) return null;
-  if (!kb_json || !company_system_prompt) return null;
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.35);display:none;align-items:center;justify-content:center;z-index:60}
+  .sheet{width:min(560px,92%);background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px}
+  .sheet h2{margin:0 0 8px 0;font-size:16px}
+  .panel{border:1px solid var(--line);border-radius:12px;padding:12px;background:#fafbff}
+  .panel h3{margin:0 0 8px 0;font-size:14px}
+  .field{display:flex;flex-direction:column;gap:6px;margin:8px 0}
+  .field input,.field textarea{border:1px solid var(--line);border-radius:10px;padding:10px}
+  .small{font-size:12px;color:#647085}
+  .sheet .row{justify-content:flex-end}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1 id="companyTitle">Your AI Employee</h1>
+    <div class="toggle" id="modeToggle">
+      <button type="button" data-mode="text" class="active">Text</button>
+      <button type="button" data-mode="voicenote">Voice Note</button>
+      <button type="button" data-mode="call">Call</button>
+    </div>
+    <div class="spacer"></div>
+    <button type="button" id="gearBtn" class="icon-btn" title="Settings">⚙️</button>
+  </header>
 
-  const kbRaw = JSON.stringify(kb_json);
-  const kbTrunc = kbRaw.length > MAX_JSON_CHARS ? kbRaw.slice(0, MAX_JSON_CHARS) + "\n/*[truncated]*/" : kbRaw;
-  const kbBrief = briefFromKB(kb_json);
+  <main id="main">
+    <div id="welcome" class="welcomeOverlay">
+      <div class="welcomeBubble">
+        Hey! I'm your AI assistant.<br/>Ask me anything about your business and I will get it done for you.
+      </div>
+    </div>
 
-  const histMsgs = (Array.isArray(history) ? history : [])
-    .slice(-8)
-    .map((h) => (h.role === "user" ? { role: "user", content: h.text || "" } : { role: "assistant", content: "OK." }));
+    <div id="stream" class="stream" aria-live="polite"></div>
+    <div id="vnStream" class="stream" style="display:none" aria-live="polite"></div>
 
-  const messages = [
-    { role: "system", content: String(company_system_prompt) },
-    { role: "system", content: "KB_BRIEF:\n" + kbBrief },
-    { role: "system", content: "KB_JSON:\n" + kbTrunc },
-    ...histMsgs,
-    { role: "user", content: `User mode: ${mode}\n\n${user}` },
-    { role: "system", content: "Rules: Prefer KB facts. If unsure, keep it short. Output 2–4 short sentences max." },
-  ];
+    <div id="callArea" class="callWrap" aria-live="polite">
+      <div id="viz" class="viz"></div>
+      <div id="callStatus" class="status">Tell me, how can I help you today?</div>
+      <div class="prompt">Hands-free: just speak. I’ll answer out loud, then listen again.</div>
+      <audio id="remoteAudio" autoplay playsinline></audio>
+    </div>
+  </main>
 
-  const r = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: MODEL, temperature: 0.2, messages }),
-  });
-  if (!r.ok) return null;
-  const j = await r.json().catch(() => null);
-  return j?.choices?.[0]?.message?.content?.trim() || null;
-}
+  <footer>
+    <div id="textFooter" class="composer">
+      <div class="row box">
+        <input id="prompt" type="text" placeholder="What can I do for you today" />
+        <button id="send" type="button">Send</button>
+      </div>
+    </div>
 
-// --- MAIN -------------------------------------------------------------------
-module.exports = async (req, res) => {
-  if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Method Not Allowed" });
+    <div id="vnFooter" class="composer" style="display:none">
+      <div class="row box" style="justify-content:center">
+        <button id="vnToggle" class="ghost" type="button">● Record</button>
+        <button id="vnSend" type="button" disabled>Send</button>
+      </div>
+    </div>
+  </footer>
+</div>
+
+<!-- SETTINGS MODAL -->
+<div id="kbModal" class="modal" aria-hidden="true">
+  <div class="sheet" role="dialog" aria-modal="true" aria-label="Settings">
+    <h2>Settings</h2>
+    <div class="panel">
+      <h3>Contact for Demo Actions</h3>
+      <div class="field">
+        <label>Phone (E.164) <span class="small">Used for WhatsApp & Calls</span></label>
+        <input id="setPhone" type="tel" placeholder="+34 600 000 000" />
+      </div>
+      <div class="field">
+        <label>Email <span class="small">Used for Email actions</span></label>
+        <input id="setEmail" type="email" placeholder="client@company.com" />
+      </div>
+      <div class="field">
+        <label>Test message (optional)</label>
+        <textarea id="testMsg" placeholder="Message for test actions"></textarea>
+      </div>
+      <div class="row" style="gap:8px">
+        <button id="testWA" class="ghost" type="button">Test WhatsApp</button>
+        <button id="testCall" class="ghost" type="button">Test Call</button>
+        <button id="testEmail" class="ghost" type="button">Test Email</button>
+        <div class="spacer"></div>
+        <button id="kbSave" title="Save settings" type="button">Save</button>
+        <button id="kbCancel" class="ghost" type="button">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ====== Tenant bootstrap (optional) ====== */
+window.__KB__ = window.__KB__ || null;
+window.__SYS_PROMPT__ = window.__SYS_PROMPT__ || null;
+window.__TENANT__ = window.__TENANT__ || null;
+window.__TOKEN__  = window.__TOKEN__  || null;
+
+(async () => {
+  const qs = new URLSearchParams(location.search);
+  const tenant = qs.get('tenant');
+  const token  = qs.get('token');
+
+  if (!tenant || !token) return;
 
   try {
-    const body = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body || {});
-    let {
-      utterance = "",
-      mode = "text",
-      history = [],
-      tenant = null, token = null,
-      kb_json = null, company_system_prompt = null,
-    } = body;
-
-    const trace = traceId();
-
-    // PROACTIVE (no I/O; immediate demo)
-    if (needsAgent(utterance) || !process.env.OPENAI_API_KEY) {
-      const name = extractClientName(utterance);
-      const kind = /quote|proposal/i.test(utterance) ? "Quote" : "Invoice";
-      // detect amount if present
-      const m = utterance.match(/(\d[\d.,]*)\s*€|€\s*(\d[\d.,]*)/);
-      const rawAmt = m ? (m[1] || m[2]) : "1250";
-      const amt = Number(String(rawAmt).replace(/[.,](?=\d{3}\b)/g, "").replace(",", "."));
-      const amount = isFinite(amt) && amt > 0 ? Math.round(amt * 100) / 100 : 1250;
-
-      const doc = demoDoc({ customer: name, amount, currency: "€", kind });
-      const cards = [
-        mkTableCard(doc),
-        { format: "file", summary: `${kind} PDF`, value: { url: doc.pdf_url, name: `${doc.id}.pdf` } }
-      ];
-
-      const bursts = [
-        `I’ve prepared a ${kind.toLowerCase()} for ${name}.`,
-        `Total: ${doc.currency}${doc.total}.`,
-        "I used our standard template and the latest service details.",
-        "Tell me if you want any edits — items, amounts, or tax.",
-        "If it looks good, I can also draft the email and attach the PDF."
-      ];
-
-      const script = bursts.map((t, i) => ({ text: t, delay_ms: i === 0 ? 0 : 320, show_role: i === 0 }));
-
-      // Optional: expose actions
-      const ask = {
-        context_id: trace,
-        question: "Next step?",
-        options: [
-          { id: "email", label: "Prepare email draft" },
-          { id: "send_now", label: `Send ${kind.toLowerCase()} now` },
-          { id: "edit", label: "Modify details" }
-        ]
-      };
-
-      return res.status(200).json({
-        mode,
-        script,
-        cards,
-        ask,
-        meta: { intent: kind === "Quote" ? "create_quote" : "create_invoice", topic: "billing", trace_id: trace, used_llm: false, fast_demo: true }
-      });
-    }
-
-    // If not proactive and OpenAI is available → concise KB answer
-    const llmText = await kbAnswerWithLLM({ kb_json, company_system_prompt, user: utterance, history, mode });
-    if (llmText) {
-      const script = protectBurst(llmText).map((t, i) => ({ text: t, delay_ms: i === 0 ? 0 : 280, show_role: i === 0 }));
-      return res.status(200).json({ mode, script, cards: [], meta: { intent: "kb_answer", topic: "generic", trace_id: trace, used_llm: true } });
-    }
-
-    // Fallback (shouldn’t happen, but just in case)
-    return res.status(200).json({
-      mode,
-      script: [{ text: "Ok — I’ll take care of this right away.", delay_ms: 0, show_role: true }],
-      cards: [{ format: "text", value: "Demo mode active. Ask me to create a quote or invoice to see a full example." }],
-      meta: { intent: "generic_plan", topic: "generic", trace_id: trace, used_llm: false }
+    await new Promise((ok, err) => {
+      const s = document.createElement('script');
+      s.src = `/api/tenantBootstrap?tenant=${encodeURIComponent(tenant)}&token=${encodeURIComponent(token)}`;
+      s.onload = ok; s.onerror = err; document.head.appendChild(s);
     });
+  } catch {}
 
-  } catch (e) {
-    return res.status(200).json({
-      mode: "text",
-      script: [{ text: "Something went wrong, but I’ve switched to demo mode.", delay_ms: 0, show_role: true }],
-      cards: [{ format: "text", value: String(e?.message || e) }],
-      meta: { error: true }
-    });
+  if (!window.__KB__ || !window.__SYS_PROMPT__) {
+    try {
+      const r = await fetch(`/api/tenantGet?tenant=${encodeURIComponent(tenant)}&token=${encodeURIComponent(token)}`);
+      const j = await r.json();
+      if (j.ok) {
+        window.__KB__ = j.tenant.kb_json || null;
+        window.__SYS_PROMPT__ = j.tenant.company_system_prompt || null;
+        window.__TENANT__ = tenant;
+        window.__TOKEN__  = token;
+      }
+    } catch (e) { console.warn('tenantGet fallback failed:', e); }
   }
-};
+
+  try {
+    const name = (window.__KB__?.meta?.company?.name) || 'Your AI Employee';
+    const ver  = (window.__KB__?.meta?.kb_version) ? ` (v${window.__KB__.meta.kb_version})` : '';
+    const h1 = document.getElementById('companyTitle');
+    if (h1) h1.textContent = `AI Assistant — ${name}${ver}`;
+    document.title = `AI Assistant — ${name}${ver}`;
+  } catch {}
+})();
+</script>
+
+<script>
+/* ====== Elements & state ====== */
+let messages = [];       // Text mode
+let vnMessages = [];     // Voice Note mode
+let firstUserMessageSent = false;
+
+const $modeToggle = document.getElementById('modeToggle');
+const $main = document.getElementById('main');
+const $stream = document.getElementById('stream');
+const $vnStream = document.getElementById('vnStream');
+
+const $textFooter = document.getElementById('textFooter');
+const $vnFooter = document.getElementById('vnFooter');
+
+const $callArea = document.getElementById('callArea');
+const $viz = document.getElementById('viz');
+const $callStatus = document.getElementById('callStatus');
+
+const $prompt = document.getElementById('prompt');
+const $send = document.getElementById('send');
+
+const $gearBtn = document.getElementById('gearBtn');
+const $kbModal = document.getElementById('kbModal');
+const $kbSave = document.getElementById('kbSave');
+const $kbCancel = document.getElementById('kbCancel');
+
+const $setPhone = document.getElementById('setPhone');
+const $setEmail = document.getElementById('setEmail');
+const $testMsg  = document.getElementById('testMsg');
+const $testWA   = document.getElementById('testWA');
+const $testCall = document.getElementById('testCall');
+const $testEmail= document.getElementById('testEmail');
+
+const $welcome = document.getElementById('welcome');
+
+/* Load saved contacts */
+try { const savedPhone = localStorage.getItem('demo_contact_phone'); if (savedPhone) $setPhone.value = savedPhone; } catch {}
+try { const savedEmail = localStorage.getItem('demo_contact_email'); if (savedEmail) $setEmail.value = savedEmail; } catch {}
+
+/* ====== Helpers ====== */
+function esc(s){ return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function tableHTML(t){ if(!t||!t.columns||!t.rows) return ''; let h='<table><thead><tr>'; for(const c of t.columns) h+=`<th>${esc(String(c))}</th>`; h+='</tr></thead><tbody>'; for(const r of t.rows) h+='<tr>'+r.map(v=>`<td>${esc(String(v))}</td>`).join('')+'</tr>'; h+='</tbody></table>'; return h; }
+function scrollToBottom(el){ el.scrollTo({ top: el.scrollHeight, behavior:'smooth' }); }
+
+/* ====== Typing indicator per-burst ====== */
+function showTyping(targetStreamEl){
+  const wrap = document.createElement('div'); wrap.className='msg';
+  wrap.innerHTML = `<div class="bubble"><div class="role">Your AI Employee</div>
+    <span class="typing"><span>typing</span>
+      <span class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
+    </span></div>`;
+  targetStreamEl.appendChild(wrap);
+  scrollToBottom(targetStreamEl);
+  return () => wrap.remove();
+}
+function humanDelayFor(text){
+  const len = (text||'').length;
+  return Math.max(900, Math.min(1800, Math.round(len * 8)));
+}
+
+/* ====== Shared renderer (no blocking) ====== */
+async function renderFinalAnswer(resp, targetStreamEl, targetMessages){
+  try{
+    // 1) bursts
+    const bursts = Array.isArray(resp?.script) ? resp.script : [];
+    for (let i=0;i<bursts.length;i++){
+      const b = bursts[i] || {};
+      const removeTyping = showTyping(targetStreamEl);
+      const wait = humanDelayFor(b.text) + (b.delay_ms||0);
+      await new Promise(r=>setTimeout(r, wait));
+      removeTyping();
+
+      const roleHdr = (b.show_role || i===0) ? '<div class="role">Your AI Employee</div>' : '';
+      const wrap = document.createElement('div'); wrap.className='msg assistant';
+      wrap.innerHTML = `<div class="bubble">${roleHdr}${esc(b.text||'')}</div>`;
+      targetStreamEl.appendChild(wrap);
+      scrollToBottom(targetStreamEl);
+
+      targetMessages.push({ role:'assistant', html: esc(b.text||''), raw:{ meta: resp.meta||{} } });
+    }
+
+    // 2) cards
+    const cards = Array.isArray(resp?.cards) ? resp.cards : [];
+    if (cards.length){
+      const container = document.createElement('div'); container.className='msg assistant';
+      const inner = document.createElement('div'); inner.className='bubble';
+      inner.innerHTML = `<div class="role">Your AI Employee</div>`;
+      for (const c of cards){
+        if (c.format === 'table') {
+          inner.innerHTML += `<div class="card"><h3>${esc(c.summary||'Result')}</h3>${tableHTML(c.value)}</div>`;
+        } else if (c.format === 'file') {
+          const v = c.value||{};
+          inner.innerHTML += `<div class="card"><h3>${esc(c.summary||'File')}</h3>
+            <a href="${esc(v.url||'#')}" target="_blank" rel="noopener">${esc(v.name||'Download')}</a></div>`;
+        } else {
+          inner.innerHTML += `<div class="card"><h3>${esc(c.summary||'Result')}</h3><div>${esc(c.value||'')}</div></div>`;
+        }
+      }
+      container.appendChild(inner);
+      targetStreamEl.appendChild(container);
+      scrollToBottom(targetStreamEl);
+      targetMessages.push({ role:'assistant', html: inner.innerHTML, raw:{ meta: resp.meta||{} } });
+    }
+
+    // 3) ask options
+    if (resp?.ask) renderAsk(resp.ask);
+
+  }catch(e){
+    const wrap = document.createElement('div'); wrap.className='msg assistant';
+    wrap.innerHTML = `<div class="bubble"><div class="role">Your AI Employee</div>
+      <div class="card"><h3>Error</h3><div>${esc(String(e.message||e))}</div></div></div>`;
+    targetStreamEl.appendChild(wrap);
+    scrollToBottom(targetStreamEl);
+  }
+}
+
+/* ====== Ask UI ====== */
+function renderAsk(askObj){
+  if (!askObj) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'msg assistant';
+  wrap.innerHTML = `<div class="bubble">
+    <div class="role">Your AI Employee</div>
+    <div>${esc(askObj.question)}</div>
+    <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+      ${askObj.options.map(o => `<button class="ghost" data-o="${o.id}" type="button">${esc(o.label)}</button>`).join('')}
+    </div>
+  </div>`;
+  $stream.appendChild(wrap); scrollToBottom($stream);
+  wrap.querySelectorAll('button[data-o]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const choice = btn.getAttribute('data-o');
+      const client = { phone: getPhone(), email: getEmail() };
+      const body = { utterance: `deliver via ${choice}`, client };
+
+      if (window.__TENANT__ && window.__TOKEN__) {
+        body.tenant = window.__TENANT__;
+        body.token  = window.__TOKEN__;
+      } else {
+        body.kb_json = window.__KB__;
+        body.company_system_prompt = window.__SYS_PROMPT__;
+      }
+
+      const r = await fetch('/api/demoAgent',{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+      const resp = await r.json();
+      await renderFinalAnswer(resp, $stream, messages);
+    });
+  });
+}
+
+/* ====== API & history ====== */
+function historyForAPI(){
+  const h=[]; for(const m of messages){
+    if(m.role==='user') h.push({role:'user',text:m.html.replace(/<[^>]+>/g,'')});
+    if(m.role==='assistant'&&m.raw?.meta) h.push({role:'assistant',intent:m.raw.meta.intent,entities:m.raw.entities||{}});
+  }
+  return h.slice(-12);
+}
+function getPhone(){ return ($setPhone.value||'').trim(); }
+function getEmail(){ return ($setEmail.value||'').trim(); }
+
+async function askAPI(text){
+  const client = { phone: getPhone(), email: getEmail() };
+  const mode = 'text';
+  const body = { utterance:text, history:historyForAPI(), client, mode };
+
+  if (window.__TENANT__ && window.__TOKEN__) {
+    body.tenant = window.__TENANT__;
+    body.token  = window.__TOKEN__;
+  } else {
+    body.kb_json = window.__KB__;
+    body.company_system_prompt = window.__SYS_PROMPT__;
+  }
+
+  const r = await fetch('/api/demoAgent',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body)
+  });
+  if(!r.ok){ const t = await r.text(); throw new Error('HTTP '+r.status+' '+t); }
+  return r.json();
+}
+
+/* ====== Text mode ====== */
+function renderText(){
+  $stream.innerHTML = messages.map(m=>{
+    const role = m.role==='user'?'user':'assistant';
+    return `<div class="msg ${role}"><div class="bubble">${role==='user'?'<div class="role">You</div>':'<div class="role">Your AI Employee</div>'}${m.html}</div></div>`;
+  }).join('');
+  scrollToBottom($stream);
+}
+function pushUser(text){
+  messages.push({role:'user', html:esc(text)}); renderText();
+  if (!firstUserMessageSent) { firstUserMessageSent = true; $welcome.style.display='none'; }
+}
+function sendText(){
+  const t = $prompt.value.trim(); if(!t) return;
+  pushUser(t); $prompt.value='';
+
+  // Lightweight placeholder card (removed on success)
+  const info = document.createElement('div'); info.className='msg assistant';
+  info.innerHTML = `<div class="bubble"><div class="role">Your AI Employee</div>
+    <div class="card"><h3>Info</h3><div>Working on it…</div></div></div>`;
+  $stream.appendChild(info); scrollToBottom($stream);
+
+  askAPI(t)
+    .then(async (resp)=>{
+      info.remove();
+      await renderFinalAnswer(resp, $stream, messages);
+    })
+    .catch(e=>{
+      info.remove();
+      messages.push({role:'assistant', html:`<div class="card"><h3>Error</h3><div>${esc(String(e.message||e))}</div></div>`});
+      renderText();
+    });
+}
+$send.addEventListener('click', sendText);
+$prompt.addEventListener('keydown', e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendText(); }});
+
+/* ====== Voice Note (keep simple; uses same renderer) ====== */
+let vnMediaRec=null, vnChunks=[], vnBlob=null, vnMime=null, vnDurationSec=0, vnStartAt=0, vnStreamLive=null;
+function renderVN(){
+  $vnStream.innerHTML = vnMessages.map(m=>{
+    const role = m.role==='user'?'user':'assistant';
+    return `<div class="msg ${role}"><div class="bubble">${
+      role==='user'
+        ? '<div class="role">You (voice note)</div>' + m.html
+        : '<div class="role">Your AI Employee</div>' + m.html
+    }</div></div>`;
+  }).join('');
+  scrollToBottom($vnStream);
+}
+function vnPushAudio(url, durationSec){
+  const html = `<div class="audio-note"><audio controls src="${url}"></audio><small>${Math.round(durationSec)}s</small></div>`;
+  vnMessages.push({ role:'user', html }); renderVN();
+  if (!firstUserMessageSent){ firstUserMessageSent=true; $welcome.style.display='none'; }
+}
+const vnPerms = { audio: { echoCancellation:true, noiseSuppression:true, autoGainControl:true } };
+document.getElementById('vnToggle').addEventListener('click', async ()=>{
+  if (vnMediaRec && vnMediaRec.state === 'recording') {
+    try { vnMediaRec.stop(); } catch {}
+    document.getElementById('vnToggle').textContent = '● Record';
+    document.getElementById('vnSend').disabled = !vnBlob;
+    return;
+  }
+  try{
+    vnStreamLive = await navigator.mediaDevices.getUserMedia(vnPerms);
+    vnMime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
+    vnMediaRec = new MediaRecorder(vnStreamLive,{ mimeType: vnMime });
+    vnChunks = []; vnStartAt = Date.now(); vnBlob = null; vnDurationSec = 0;
+    vnMediaRec.ondataavailable = e=>{ if (e.data?.size) vnChunks.push(e.data); };
+    vnMediaRec.onstart = ()=>{ document.getElementById('vnToggle').textContent='■ Stop'; document.getElementById('vnSend').disabled=true; };
+    vnMediaRec.onstop = ()=>{
+      vnDurationSec = (Date.now()-vnStartAt)/1000;
+      vnBlob = new Blob(vnChunks,{type: vnMime});
+      try { vnStreamLive.getTracks().forEach(t=>t.stop()); } catch {}
+      document.getElementById('vnSend').disabled=false; document.getElementById('vnToggle').textContent='● Record';
+    };
+    vnMediaRec.start();
+  }catch(e){ alert('Mic permission needed'); }
+});
+document.getElementById('vnSend').addEventListener('click', async ()=>{
+  if(!vnBlob) return;
+  const url = URL.createObjectURL(vnBlob);
+  vnPushAudio(url, vnDurationSec);
+  document.getElementById('vnSend').disabled = true;
+
+  const base64 = await (new Promise(res=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.readAsDataURL(vnBlob); }));
+  const res = await fetch('/api/transcribe', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ audio: base64, mime: vnMime })
+  });
+  const j = await res.json();
+  if (!j.ok){
+    vnMessages.push({ role:'assistant', html:`<div class="card"><h3>Error</h3><div>Transcription failed.</div></div>`});
+    renderVN(); document.getElementById('vnSend').disabled=false; return;
+  }
+  const text = j.text || '';
+  askAPI(text)
+    .then(async (resp)=>{ await renderFinalAnswer(resp, $vnStream, vnMessages); document.getElementById('vnSend').disabled=false; })
+    .catch(()=>{ vnMessages.push({ role:'assistant', html:`<div class="card"><h3>Error</h3><div>Sorry, there was an error.</div></div>`}); renderVN(); document.getElementById('vnSend').disabled=false; });
+});
+
+/* ====== Call mode (unchanged lightweight visualizer) ====== */
+let sr=null, speaking=false, listening=false, gateThresh=0.02;
+function sttAvailable(){ return !!(window.SpeechRecognition || window.webkitSpeechRecognition); }
+let audioCtx=null, analyser=null, rafId=null;
+function startVizFallback(){
+  if (audioCtx) return;
+  (async ()=>{
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation:true, noiseSuppression:true, autoGainControl:true, channelCount:1 }
+    });
+    audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+    const src = audioCtx.createMediaStreamSource(stream);
+    const hpf = audioCtx.createBiquadFilter(); hpf.type='highpass'; hpf.frequency.value = 120;
+    analyser = audioCtx.createAnalyser(); analyser.fftSize = 1024;
+    src.connect(hpf).connect(analyser);
+    const data = new Float32Array(analyser.fftSize);
+    function tick(now){
+      analyser.getFloatTimeDomainData(data);
+      let sum=0; for(let i=0;i<data.length;i++){ const v=data[i]; sum+=v*v; }
+      const rms=Math.sqrt(sum/data.length);
+      const gated = rms > gateThresh;
+      if(listening && gated){
+        $viz.style.borderColor='var(--listen)';
+        $viz.style.boxShadow='0 12px 40px rgba(16,185,129,.22)';
+        const scale=1+Math.min(1.0,rms*3.8); $viz.style.transform=`scale(${scale.toFixed(2)})`;
+      }else if(speaking){
+        const t=now/520; const scale=1+0.07*Math.sin(t*2*Math.PI);
+        $viz.style.transform=`scale(${scale.toFixed(2)})`;
+        $viz.style.borderColor='var(--speak)';
+      }else{
+        $viz.style.transform='scale(1)';
+        $viz.style.borderColor='#bfe7ff';
+        $viz.style.boxShadow='0 12px 40px rgba(14,165,233,.18)';
+      }
+      rafId=requestAnimationFrame(tick);
+    }
+    rafId=requestAnimationFrame(tick);
+  })();
+}
+let selectedVoice=null;
+function getVoicesOnce(){ return new Promise(r=>{ const v=speechSynthesis.getVoices(); if(v&&v.length) return r(v); speechSynthesis.onvoiceschanged=()=>r(speechSynthesis.getVoices()); }); }
+async function pickEnglishVoice(){ const voices=await getVoicesOnce(); const prefer=[/en-US.*(Female|Samantha|Google US|Jenny|America|Alloy|Natural)/i,/en-GB/i,/en-/i]; for(const rx of prefer){ const hit=voices.find(v=>rx.test(`${v.name} ${v.lang}`)); if(hit) return hit; } return voices[0]||null; }
+async function speakFallback(t){ if(!window.speechSynthesis) return; if(!selectedVoice) selectedVoice=await pickEnglishVoice(); speaking=true; listening=false; const u=new SpeechSynthesisUtterance(t||''); u.lang='en-US'; u.voice=selectedVoice||null; u.rate=1; u.pitch=1; speechSynthesis.cancel(); speechSynthesis.speak(u); u.onend=()=>{ speaking=false; startListenFallback(); }; }
+function startListenFallback(){
+  if(!sttAvailable()){ $callStatus.textContent='Microphone not supported.'; return; }
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  try{ sr && sr.abort(); }catch{}
+  sr=new SR(); sr.lang='en-US'; sr.interimResults=true; sr.continuous=true;
+  listening=true; $callStatus.textContent="Tell me, how can I help you today?";
+  let final='';
+  sr.onresult=(e)=>{ for(let i=e.resultIndex;i<e.results.length;i++){ const r=e.results[i]; if(r.isFinal){ final=r[0].transcript.trim(); if(final){ try{ sr.abort(); }catch{} listening=false; $callStatus.textContent='…'; askAPI(final).then(resp=>{ (async ()=>{ await speakFallback((resp?.script?.at(-1)?.text)||'Here is your update.'); })(); }); }}} };
+  sr.onerror=()=>{ listening=false; setTimeout(startListenFallback,250); };
+  sr.onend=()=>{ if(!speaking) setTimeout(startListenFallback,120); };
+  try{ sr.start(); }catch{ setTimeout(startListenFallback,200); }
+}
+
+/* ====== Mode switching ====== */
+function enterTextMode(){
+  $stream.style.display='block'; $vnStream.style.display='none';
+  $textFooter.style.display='block'; $vnFooter.style.display='none';
+  leaveCallMode();
+}
+function enterVoiceNoteMode(){
+  $stream.style.display='none'; $vnStream.style.display='block';
+  $textFooter.style.display='none'; $vnFooter.style.display='block';
+  leaveCallMode();
+}
+async function enterCallMode(){
+  $stream.style.display='none'; $vnStream.style.display='none';
+  $textFooter.style.display='none'; $vnFooter.style.display='none';
+  $callArea.style.display='flex';
+  startVizFallback();
+  speakFallback('Listening.');
+}
+function leaveCallMode(){
+  try{ sr && sr.abort(); }catch{} try{ speechSynthesis.cancel(); }catch{}
+  listening=false; speaking=false;
+  $viz.style.transform='scale(1)'; $viz.style.borderColor='#bfe7ff'; $viz.style.boxShadow='0 12px 40px rgba(14,165,233,.18)';
+  $callArea.style.display='none';
+}
+$modeToggle.addEventListener('click', (e)=>{
+  const btn=e.target.closest('button'); if(!btn) return;
+  [...$modeToggle.querySelectorAll('button')].forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  const m=btn.dataset.mode;
+  if (m==='text') enterTextMode();
+  else if (m==='voicenote') enterVoiceNoteMode();
+  else if (m==='call') enterCallMode();
+});
+
+/* ====== Settings modal ====== */
+function openKB(){ $kbModal.style.display='flex'; $kbModal.setAttribute('aria-hidden','false'); }
+function closeKB(){ $kbModal.style.display='none'; $kbModal.setAttribute('aria-hidden','true'); }
+$gearBtn.addEventListener('click', openKB);
+$kbCancel.addEventListener('click', closeKB);
+$kbSave.addEventListener('click', ()=>{
+  try{ localStorage.setItem('demo_contact_phone', ($setPhone.value||'').trim()); }catch{}
+  try{ localStorage.setItem('demo_contact_email', ($setEmail.value||'').trim()); }catch{}
+  closeKB();
+});
+
+/* Settings: test actions */
+$testWA.addEventListener('click', async ()=>{
+  const to = getPhone(); if(!to) return alert('Enter a phone first.');
+  const body = ($testMsg.value||'Hello from Your AI Employee (test).').trim();
+  const r = await fetch('/api/sendWhatsApp',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to, body })});
+  const j = await r.json(); alert(j.ok ? 'WhatsApp sent ✓' : ('WhatsApp error: ' + j.error));
+});
+$testCall.addEventListener('click', async ()=>{
+  const to = getPhone(); if(!to) return alert('Enter a phone first.');
+  const message = ($testMsg.value||'This is a test call from Your AI Employee.').trim();
+  const r = await fetch('/api/call',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to, message })});
+  const j = await r.json(); alert(j.ok ? 'Calling now ✓' : ('Call error: ' + j.error));
+});
+$testEmail.addEventListener('click', async ()=>{
+  const to = getEmail(); if(!to) return alert('Enter an email first.');
+  const subject = 'Your AI Employee — Test Email';
+  const html = `<p>${esc(($testMsg.value||'Hello from Your AI Employee (test).').trim())}</p>`;
+  const r = await fetch('/api/sendMailgun',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to, subject, html })});
+  const j = await r.json(); alert(j.ok ? 'Email sent ✓' : ('Email error: ' + j.error));
+});
+
+/* ====== Welcome ====== */
+function ensureWelcome(){
+  if (firstUserMessageSent) $welcome.style.display='none';
+  else $welcome.style.display='flex';
+}
+ensureWelcome();
+</script>
+</body>
+</html>
