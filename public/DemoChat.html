@@ -104,7 +104,7 @@
 
     <div id="callArea" class="callWrap" aria-live="polite">
       <div id="viz" class="viz"></div>
-      <div id="callStatus" class="status">Tell me, how can I help you today?</div>
+      <div class="status">Tell me, how can I help you today?</div>
       <div class="prompt">Hands-free: just speak. I’ll answer out loud, then listen again.</div>
       <audio id="remoteAudio" autoplay playsinline></audio>
     </div>
@@ -127,7 +127,7 @@
   </footer>
 </div>
 
-<!-- SETTINGS MODAL (unchanged) -->
+<!-- SETTINGS MODAL -->
 <div id="kbModal" class="modal" aria-hidden="true">
   <div class="sheet" role="dialog" aria-modal="true" aria-label="Settings">
     <h2>Settings</h2>
@@ -158,7 +158,7 @@
 </div>
 
 <script>
-/* ====== Tenant bootstrap (unchanged) ====== */
+/* ====== Tenant bootstrap ====== */
 window.__KB__ = window.__KB__ || null;
 window.__SYS_PROMPT__ = window.__SYS_PROMPT__ || null;
 window.__TENANT__ = window.__TENANT__ || null;
@@ -217,8 +217,6 @@ const $textFooter = document.getElementById('textFooter');
 const $vnFooter = document.getElementById('vnFooter');
 
 const $callArea = document.getElementById('callArea');
-const $viz = document.getElementById('viz');
-const $callStatus = document.getElementById('callStatus');
 
 const $prompt = document.getElementById('prompt');
 const $send = document.getElementById('send');
@@ -244,47 +242,65 @@ try { const savedEmail = localStorage.getItem('demo_contact_email'); if (savedEm
 /* ====== Helpers ====== */
 function esc(s){ return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 function tableHTML(t){ if(!t||!t.columns||!t.rows) return ''; let h='<table><thead><tr>'; for(const c of t.columns) h+=`<th>${esc(String(c))}</th>`; h+='</tr></thead><tbody>'; for(const r of t.rows) h+='<tr>'+r.map(v=>`<td>${esc(String(v))}</td>`).join('')+'</tr>'; h+='</tbody></table>'; return h; }
-function scrollToBottom(el){ el.scrollTo({ top: el.scrollHeight, behavior:'smooth' }); }
+function scrollToBottom(el){ el.scrollTop = el.scrollHeight; requestAnimationFrame(()=>{ el.scrollTop = el.scrollHeight; }); }
 
-/* ====== Typing indicator (kept), used as “thinking…” right away ====== */
+/* ====== Typing indicator (used everywhere) ====== */
 function showTyping(targetStreamEl){
   const wrap = document.createElement('div'); wrap.className='msg';
   wrap.innerHTML = `<div class="bubble"><div class="role">Your AI Employee</div><span class="typing"><span>thinking</span><span class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span></span></div>`;
   targetStreamEl.appendChild(wrap);
   scrollToBottom(targetStreamEl);
-  return () => wrap.remove();
+  let removed = false;
+  return () => { if (!removed) { removed = true; wrap.remove(); scrollToBottom(targetStreamEl); } };
 }
 
-/* ====== Human-like burst delivery ====== */
-function splitToBursts(text){
+/* ====== Sentence splitting that preserves titles like "Mr.", "Mrs.", "Dr." ====== */
+function splitToSentences(text){
   if(!text) return [];
-  const parts = text.match(/[^.!?]+[.!?]?/g) || [text];
-  return parts.map(s => s.trim()).filter(Boolean).slice(0, 6); // cap bursts
+  const exceptions = new Set(["mr.","mrs.","ms.","dr.","prof.","sr.","jr.","st.","u.s.","e.g.","i.e.","inc.","ltd.","co."]);
+  const out = [];
+  let cur = "";
+  for (let i=0;i<text.length;i++){
+    const ch = text[i];
+    cur += ch;
+    if (ch === "." || ch === "!" || ch === "?") {
+      const tail = text.slice(Math.max(0, i-6), i+1).toLowerCase();
+      let isException = false;
+      for (const ex of exceptions) { if (tail.endsWith(ex)) { isException = true; break; } }
+      if (!isException) {
+        out.push(cur.trim());
+        cur = "";
+        while (i+1 < text.length && text[i+1] === " ") i++; // skip double spaces
+      }
+    }
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
 }
+
+/* ====== Burst delivery: typing before each line; label only on first ====== */
+function renderAssistantLine(streamEl, model, html, { showRole=false } = {}){
+  model.push({ role:'assistant', html, showRole });
+  if (streamEl === $stream) renderText(); else renderVN();
+}
+
 async function deliverBursts(streamEl, model, text){
-  const bursts = splitToBursts(text);
-  for (let i=0;i<bursts.length;i++){
-    model.push({ role:'assistant', html: esc(bursts[i]) });
-    if (streamEl === $stream) renderText(); else renderVN();
-    await new Promise(r=>setTimeout(r, 320 + Math.min(1200, Math.round(bursts[i].length * 12))));
+  const sentences = splitToSentences(text).slice(0, 6);
+  if (sentences.length === 0) return;
+
+  for (let i=0;i<sentences.length;i++){
+    const typingCancel = showTyping(streamEl);
+    const wait = 350 + Math.floor(Math.random()*900); // 0.35–1.25s
+    await new Promise(r=>setTimeout(r, wait));
+    typingCancel();
+
+    const showRole = (i === 0); // ONLY first line shows "Your AI Employee"
+    renderAssistantLine(streamEl, model, esc(sentences[i]), { showRole });
+    await new Promise(r=>setTimeout(r, 220 + Math.min(1200, sentences[i].length * 10)));
   }
 }
 
-/* ====== Simplified final renderer (cards still supported) ====== */
-async function renderCards(cards, targetStreamEl, targetMessages){
-  if (!cards || !cards.length) return;
-  const htmlCards = cards.map(c => {
-    if (c.format === 'table') {
-      return `<div class="card"><h3>Result</h3>${tableHTML(c.value)}<div style="color:#6b7280">${esc(c.summary||'')}</div></div>`;
-    } else {
-      return `<div class="card"><h3>Result</h3><div>${esc(c.value||'')}</div></div>`;
-    }
-  }).join('');
-  targetMessages.push({ role:'assistant', html: htmlCards });
-  if (targetStreamEl === $stream) renderText(); else renderVN();
-}
-
-/* ====== Ask UI (unchanged) ====== */
+/* ====== Ask UI (kept if you need later) ====== */
 function renderAsk(askObj){
   if (!askObj) return;
   const wrap = document.createElement('div');
@@ -301,44 +317,15 @@ function renderAsk(askObj){
 
 /* ====== API & history ====== */
 function historyForAPI(){
-  const h=[]; for(const m of messages){ if(m.role==='user') h.push({role:'user',text:m.html.replace(/<[^>]+>/g,'')}); if(m.role==='assistant'){ h.push({role:'assistant',text:m.html.replace(/<[^>]+>/g,'')}); } }
+  const h=[];
+  for(const m of messages){
+    if(m.role==='user') h.push({role:'user',text:m.html.replace(/<[^>]+>/g,'')});
+    if(m.role==='assistant') h.push({role:'assistant',text:m.html.replace(/<[^>]+>/g,'')});
+  }
   return h.slice(-12);
 }
 function getPhone(){ return ($setPhone.value||'').trim(); }
 function getEmail(){ return ($setEmail.value||'').trim(); }
-
-/* NEW: Runner stream helper (SSE) */
-function openRunStream(run_url, targetStreamEl, targetMessages, typingCancel){
-  return new Promise((resolve) => {
-    const es = new EventSource(run_url);
-    es.onmessage = async (e) => {
-      try {
-        const evt = JSON.parse(e.data || "{}");
-        if (evt.type === "final") {
-          // Compose a short human-style summary; support artifacts/links if present
-          const result = evt.result || {};
-          const text =
-            (result.summary) ||
-            (Array.isArray(result.bullets) ? result.bullets.join(" ") : "") ||
-            "All set.";
-          typingCancel && typingCancel();
-          await deliverBursts(targetStreamEl, targetMessages, text);
-
-          // Optional: render links/artifacts as a single card
-          const links = result.links || [];
-          if (links.length) {
-            const cardHtml = `<div class="card"><h3>Links</h3><ul>${links.map(l=>`<li><a href="${esc(l)}" target="_blank" rel="noopener">${esc(l)}</a></li>`).join('')}</ul></div>`;
-            targetMessages.push({ role:'assistant', html: cardHtml });
-            if (targetStreamEl === $stream) renderText(); else renderVN();
-          }
-          es.close();
-          resolve();
-        }
-      } catch {}
-    };
-    es.onerror = () => { try { es.close(); } catch {} typingCancel && typingCancel(); resolve(); };
-  });
-}
 
 async function askAPI(text){
   const client = { phone: getPhone(), email: getEmail() };
@@ -365,65 +352,101 @@ async function askAPI(text){
   return r.json();
 }
 
+/* ====== Runner stream (SSE) ====== */
+function openRunStream(run_url, targetStreamEl, targetMessages, typingCancel){
+  return new Promise((resolve) => {
+    const es = new EventSource(run_url);
+    es.onmessage = async (e) => {
+      try {
+        const evt = JSON.parse(e.data || "{}");
+        if (evt.type === "final") {
+          const result = evt.result || {};
+          const finalText = result.summary
+            || (Array.isArray(result.bullets) ? result.bullets.join(" ") : "")
+            || "All set.";
+          if (typingCancel) typingCancel();
+          await deliverBursts(targetStreamEl, targetMessages, finalText);
+
+          const links = result.links || [];
+          if (links.length) {
+            const cardHtml = `<div class="card"><h3>Links</h3><ul>${links.map(l=>`<li><a href="${esc(l)}" target="_blank" rel="noopener">${esc(l)}</a></li>`).join('')}</ul></div>`;
+            targetMessages.push({ role:'assistant', html: cardHtml, showRole:false });
+            if (targetStreamEl === $stream) renderText(); else renderVN();
+          }
+          es.close(); resolve();
+        }
+      } catch {}
+    };
+    es.onerror = () => { try{ es.close(); }catch{} if(typingCancel) typingCancel(); resolve(); };
+  });
+}
+
 /* ====== Text mode ====== */
 function renderText(){
   $stream.innerHTML = messages.map(m=>{
     const role = m.role==='user'?'user':'assistant';
-    return `<div class="msg ${role}"><div class="bubble">${role==='user'?'<div class="role">You</div>':'<div class="role">Your AI Employee</div>'}${m.html}</div></div>`;
+    const roleHtml = (role==='assistant' && m.showRole) ? '<div class="role">Your AI Employee</div>'
+                     : (role==='user' ? '<div class="role">You</div>' : '');
+    return `<div class="msg ${role}"><div class="bubble">${roleHtml}${m.html}</div></div>`;
   }).join('');
   scrollToBottom($stream);
 }
+function renderVN(){
+  $vnStream.innerHTML = vnMessages.map(m=>{
+    const role = m.role==='user'?'user':'assistant';
+    const roleHtml = (role==='assistant' && m.showRole) ? '<div class="role">Your AI Employee</div>'
+                     : (role==='user' ? '<div class="role">You (voice note)</div>' : '');
+    return `<div class="msg ${role}"><div class="bubble">${roleHtml}${m.html}</div></div>`;
+  }).join('');
+  scrollToBottom($vnStream);
+}
+
 function pushUser(text){
   messages.push({role:'user', html:esc(text)}); renderText();
   if (!firstUserMessageSent) { firstUserMessageSent = true; $welcome.style.display='none'; }
 }
+
 async function sendText(){
   const t = $prompt.value.trim(); if(!t) return;
   pushUser(t); $prompt.value='';
-  const typingCancel = showTyping($stream); // show thinking immediately
+  const typingCancel = showTyping($stream); // show thinking immediately (desktop fix)
 
   try{
     const resp = await askAPI(t);
 
-    // Direct fast answer: burst it
     if (resp.type === "answer" && resp.text) {
       typingCancel();
       await deliverBursts($stream, messages, resp.text);
       return;
     }
 
-    // Planned agent: open SSE & burst when final arrives
     if (resp.type === "planned" && resp.run_url) {
-      await openRunStream(resp.run_url, $stream, messages, typingCancel);
+      // Ack first (proactive)
+      if (resp.ack) {
+        typingCancel();
+        await deliverBursts($stream, messages, resp.ack);
+      }
+      // Keep typing visible while the agent runs
+      const duringRunTyping = showTyping($stream);
+      await openRunStream(resp.run_url, $stream, messages, duringRunTyping);
       return;
     }
 
-    // Fallback
     typingCancel();
-    messages.push({role:'assistant', html:`<div class="card"><h3>Info</h3><div>Working on it…</div></div>`});
+    messages.push({role:'assistant', html:`<div class="card"><h3>Info</h3><div>Working on it…</div></div>`, showRole:true});
     renderText();
   } catch(e){
     typingCancel();
-    messages.push({role:'assistant', html:`<div class="card"><h3>Error</h3><div>${esc(String(e.message||e))}</div></div>`});
+    messages.push({role:'assistant', html:`<div class="card"><h3>Error</h3><div>${esc(String(e.message||e))}</div></div>`, showRole:true});
     renderText();
   }
 }
 $send.addEventListener('click', sendText);
 $prompt.addEventListener('keydown', e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendText(); }});
 
-/* ====== Voice Note (kept; uses same send pipeline) ====== */
+/* ====== Voice Note (kept) ====== */
 let vnMediaRec=null, vnChunks=[], vnBlob=null, vnMime=null, vnDurationSec=0, vnStartAt=0, vnStreamLive=null;
-function renderVN(){
-  $vnStream.innerHTML = vnMessages.map(m=>{
-    const role = m.role==='user'?'user':'assistant';
-    return `<div class="msg ${role}"><div class="bubble">${
-      role==='user'
-        ? '<div class="role">You (voice note)</div>' + m.html
-        : '<div class="role">Your AI Employee</div>' + m.html
-    }</div></div>`;
-  }).join('');
-  scrollToBottom($vnStream);
-}
+function renderVNStream(){ renderVN(); }
 function vnPushAudio(blobUrl, durationSec){
   const html = `<div class="audio-note"><audio controls src="${blobUrl}"></audio><small>${Math.round(durationSec)}s</small></div>`;
   vnMessages.push({ role:'user', html }); renderVN();
@@ -465,62 +488,100 @@ document.getElementById('vnSend').addEventListener('click', async ()=>{
     body: JSON.stringify({ audio: base64, mime: vnMime })
   });
   const j = await res.json();
+  const typingCancel = showTyping($vnStream);
+
   if (!j.ok){
-    vnMessages.push({ role:'assistant', html:`<div class="card"><h3>Error</h3><div>Transcription failed.</div></div>`});
+    typingCancel();
+    vnMessages.push({ role:'assistant', html:`<div class="card"><h3>Error</h3><div>Transcription failed.</div></div>`, showRole:true});
     renderVN(); document.getElementById('vnSend').disabled=false; return;
   }
   const text = j.text || '';
-
-  const typingCancel = showTyping($vnStream);
   askAPI(text).then(async (resp)=>{
       if (resp.type === "answer" && resp.text) {
         typingCancel(); await deliverBursts($vnStream, vnMessages, resp.text);
       } else if (resp.type === "planned" && resp.run_url) {
-        await openRunStream(resp.run_url, $vnStream, vnMessages, typingCancel);
+        typingCancel();
+        if (resp.ack) await deliverBursts($vnStream, vnMessages, resp.ack);
+        const duringRunTyping = showTyping($vnStream);
+        await openRunStream(resp.run_url, $vnStream, vnMessages, duringRunTyping);
       } else {
         typingCancel();
-        vnMessages.push({ role:'assistant', html:`<div class="card"><h3>Info</h3><div>Working on it…</div></div>`});
+        vnMessages.push({ role:'assistant', html:`<div class="card"><h3>Info</h3><div>Working on it…</div></div>`, showRole:true});
         renderVN();
       }
       document.getElementById('vnSend').disabled=false;
     })
     .catch(()=>{
       typingCancel();
-      vnMessages.push({ role:'assistant', html:`<div class="card"><h3>Error</h3><div>Sorry, there was an error.</div></div>`});
+      vnMessages.push({ role:'assistant', html:`<div class="card"><h3>Error</h3><div>Sorry, there was an error.</div></div>`, showRole:true});
       renderVN(); document.getElementById('vnSend').disabled=false;
     });
 });
 function blobToBase64(blob){ return new Promise((resolve)=>{ const r=new FileReader(); r.onload=()=>resolve(r.result); r.readAsDataURL(blob); }); }
 
-/* ====== Call mode (unchanged) ====== */
-let sr=null, speaking=false, listening=false, gateThresh=0.02;
-function sttAvailable(){ return !!(window.SpeechRecognition || window.webkitSpeechRecognition); }
-let audioCtx=null, analyser=null, rafId=null;
-function startVizFallback(){ /* unchanged logic for viz */ }
-let selectedVoice=null;
-function getVoicesOnce(){ return new Promise(r=>{ const v=speechSynthesis.getVoices(); if(v&&v.length) return r(v); speechSynthesis.onvoiceschanged=()=>r(speechSynthesis.getVoices()); }); }
-async function pickEnglishVoice(){ const voices=await getVoicesOnce(); const prefer=[/en-US.*(Female|Samantha|Google US|Jenny|America|Alloy|Natural)/i,/en-GB/i,/en-/i]; for(const rx of prefer){ const hit=voices.find(v=>rx.test(`${v.name} ${v.lang}`)); if(hit) return hit; } return voices[0]||null; }
-async function speakFallback(t){ if(!window.speechSynthesis) return; if(!selectedVoice) selectedVoice=await pickEnglishVoice(); speaking=true; listening=false; const u=new SpeechSynthesisUtterance(t||''); u.lang='en-US'; u.voice=selectedVoice||null; u.rate=1; u.pitch=1; speechSynthesis.cancel(); speechSynthesis.speak(u); u.onend=()=>{ speaking=false; startListenFallback(); }; }
-function startListenFallback(){ /* unchanged SR loop */ }
+/* ====== Mode switching & settings ====== */
+function enterTextMode(){
+  $stream.style.display='block'; $vnStream.style.display='none';
+  $textFooter.style.display='block'; $vnFooter.style.display='none';
+  leaveCallMode();
+}
+function enterVoiceNoteMode(){
+  $stream.style.display='none'; $vnStream.style.display='block';
+  $textFooter.style.display='none'; $vnFooter.style.display='block';
+  leaveCallMode();
+}
+async function enterCallMode(){
+  $stream.style.display='none'; $vnStream.style.display='none';
+  $textFooter.style.display='none'; $vnFooter.style.display='none';
+  $callArea.style.display='flex';
+}
+function leaveCallMode(){
+  $callArea.style.display='none';
+}
+$modeToggle.addEventListener('click', (e)=>{
+  const btn=e.target.closest('button'); if(!btn) return;
+  [...$modeToggle.querySelectorAll('button')].forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  const m=btn.dataset.mode;
+  if (m==='text') enterTextMode();
+  else if (m==='voicenote') enterVoiceNoteMode();
+  else if (m==='call') enterCallMode();
+});
 
-/* ====== Mode switching / Settings (unchanged) ====== */
-function enterTextMode(){ $stream.style.display='block'; $vnStream.style.display='none'; $textFooter.style.display='block'; $vnFooter.style.display='none'; leaveCallMode(); }
-function enterVoiceNoteMode(){ $stream.style.display='none'; $vnStream.style.display='block'; $textFooter.style.display='none'; $vnFooter.style.display='block'; leaveCallMode(); }
-async function enterCallMode(){ $stream.style.display='none'; $vnStream.style.display='none'; $textFooter.style.display='none'; $vnFooter.style.display='none'; $callArea.style.display='flex'; /* ... */ }
-function leaveCallMode(){ /* ... */ }
-$modeToggle.addEventListener('click', (e)=>{ const btn=e.target.closest('button'); if(!btn) return; [...$modeToggle.querySelectorAll('button')].forEach(b=>b.classList.remove('active')); btn.classList.add('active'); const m=btn.dataset.mode; if (m==='text') enterTextMode(); else if (m==='voicenote') enterVoiceNoteMode(); else if (m==='call') enterCallMode(); });
-
+/* Settings modal */
 function openKB(){ $kbModal.style.display='flex'; $kbModal.setAttribute('aria-hidden','false'); }
 function closeKB(){ $kbModal.style.display='none'; $kbModal.setAttribute('aria-hidden','true'); }
 $gearBtn.addEventListener('click', openKB);
 $kbCancel.addEventListener('click', closeKB);
-$kbSave.addEventListener('click', ()=>{ try{ localStorage.setItem('demo_contact_phone', ($setPhone.value||'').trim()); }catch{} try{ localStorage.setItem('demo_contact_email', ($setEmail.value||'').trim()); }catch{} closeKB(); });
+$kbSave.addEventListener('click', ()=>{
+  try{ localStorage.setItem('demo_contact_phone', ($setPhone.value||'').trim()); }catch{}
+  try{ localStorage.setItem('demo_contact_email', ($setEmail.value||'').trim()); }catch{}
+  closeKB();
+});
 
-$testWA.addEventListener('click', async ()=>{ const to = ($setPhone.value||'').trim(); if(!to) return alert('Enter a phone first.'); const body = ($testMsg.value||'Hello from Your AI Employee (test).').trim(); const r = await fetch('/api/sendWhatsApp',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to, body })}); const j = await r.json(); alert(j.ok ? 'WhatsApp sent ✓' : ('WhatsApp error: ' + j.error)); });
-$testCall.addEventListener('click', async ()=>{ const to = ($setPhone.value||'').trim(); if(!to) return alert('Enter a phone first.'); const message = ($testMsg.value||'This is a test call from Your AI Employee.').trim(); const r = await fetch('/api/call',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to, message })}); const j = await r.json(); alert(j.ok ? 'Calling now ✓' : ('Call error: ' + j.error)); });
-$testEmail.addEventListener('click', async ()=>{ const to = ($setEmail.value||'').trim(); if(!to) return alert('Enter an email first.'); const subject = 'Your AI Employee — Test Email'; const html = `<p>${esc(($testMsg.value||'Hello from Your AI Employee (test).').trim())}</p>`; const r = await fetch('/api/sendMailgun',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to, subject, html })}); const j = await r.json(); alert(j.ok ? 'Email sent ✓' : ('Email error: ' + j.error)); });
+/* Settings: test actions */
+$testWA.addEventListener('click', async ()=>{
+  const to = ($setPhone.value||'').trim(); if(!to) return alert('Enter a phone first.');
+  const body = ($testMsg.value||'Hello from Your AI Employee (test).').trim();
+  const r = await fetch('/api/sendWhatsApp',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to, body })});
+  const j = await r.json(); alert(j.ok ? 'WhatsApp sent ✓' : ('WhatsApp error: ' + j.error));
+});
+$testCall.addEventListener('click', async ()=>{
+  const to = ($setPhone.value||'').trim(); if(!to) return alert('Enter a phone first.');
+  const message = ($testMsg.value||'This is a test call from Your AI Employee.').trim();
+  const r = await fetch('/api/call',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to, message })});
+  const j = await r.json(); alert(j.ok ? 'Calling now ✓' : ('Call error: ' + j.error));
+});
+$testEmail.addEventListener('click', async ()=>{
+  const to = ($setEmail.value||'').trim(); if(!to) return alert('Enter an email first.');
+  const subject = 'Your AI Employee — Test Email';
+  const html = `<p>${esc(($testMsg.value||'Hello from Your AI Employee (test).').trim())}</p>`;
+  const r = await fetch('/api/sendMailgun',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to, subject, html })});
+  const j = await r.json(); alert(j.ok ? 'Email sent ✓' : ('Email error: ' + j.error));
+});
 
-function ensureWelcome(){ if (firstUserMessageSent) $welcome.style.display='none'; else $welcome.style.display='flex'; }
+/* ====== Welcome ====== */
+function ensureWelcome(){ $welcome.style.display = firstUserMessageSent ? 'none' : 'flex'; }
 ensureWelcome();
 </script>
 </body>
